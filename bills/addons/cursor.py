@@ -322,12 +322,12 @@ class CursorAddon(Addon):
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.read()
 
-    @classmethod
-    def _parse_date(cls, text: str) -> str | None:
+    @staticmethod
+    def _parse_date(text: str) -> str | None:
         m = re.search(r"([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})", text)
         if not m:
             return None
-        month = cls._MONTHS.get(m.group(1)[:3].lower())
+        month = _MONTHS.get(m.group(1)[:3].lower())
         if not month:
             return None
         return f"{int(m.group(3)):04d}-{month:02d}-{int(m.group(2)):02d}"
