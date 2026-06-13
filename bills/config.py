@@ -26,9 +26,16 @@ DEFAULT_CRON = {
 SECRET_KEYS = {
     "BILLS_EMAIL_PASSWORD",
     "VODAFONE_PASSWORT",
-    "VODAFONE_EMAIL_PASSWORD",
     "CURSOR_PASSWORD",
-    "CURSOR_EMAIL_PASSWORD",
+}
+
+# Legacy per-addon SMTP keys (migrated to BILLS_*; still read as fallback from env).
+_LEGACY_MAIL_KEYS = {
+    "BILLS_SMTP_SERVER": ("VODAFONE_SMTP_SERVER", "CURSOR_SMTP_SERVER"),
+    "BILLS_SMTP_PORT": ("VODAFONE_SMTP_PORT", "CURSOR_SMTP_PORT"),
+    "BILLS_EMAIL_FROM": ("VODAFONE_EMAIL_FROM", "CURSOR_EMAIL_FROM"),
+    "BILLS_EMAIL_PASSWORD": ("VODAFONE_EMAIL_PASSWORD", "CURSOR_EMAIL_PASSWORD"),
+    "BILLS_EMAIL_TO": ("VODAFONE_EMAIL_TO", "CURSOR_EMAIL_TO"),
 }
 
 # Schema that drives the web config form. Each field maps 1:1 to a settings key.
@@ -42,7 +49,7 @@ SETTINGS_SCHEMA = [
         ],
     },
     {
-        "section": "Shared SMTP (fallback for all addons)",
+        "section": "SMTP (all addons)",
         "fields": [
             {"key": "BILLS_SMTP_SERVER", "label": "SMTP server", "type": "text"},
             {"key": "BILLS_SMTP_PORT", "label": "SMTP port", "type": "text"},
@@ -56,10 +63,6 @@ SETTINGS_SCHEMA = [
         "fields": [
             {"key": "VODAFONE_USERNAME", "label": "Username", "type": "text"},
             {"key": "VODAFONE_PASSWORT", "label": "Password", "type": "secret"},
-            {"key": "VODAFONE_EMAIL_TO", "label": "Recipient", "type": "text"},
-            {"key": "VODAFONE_SMTP_SERVER", "label": "SMTP server (override)", "type": "text"},
-            {"key": "VODAFONE_EMAIL_FROM", "label": "From (override)", "type": "text"},
-            {"key": "VODAFONE_EMAIL_PASSWORD", "label": "Password (override)", "type": "secret"},
         ],
     },
     {
@@ -67,11 +70,7 @@ SETTINGS_SCHEMA = [
         "fields": [
             {"key": "CURSOR_EMAIL", "label": "Email", "type": "text"},
             {"key": "CURSOR_PASSWORD", "label": "Password", "type": "secret"},
-            {"key": "CURSOR_EMAIL_TO", "label": "Recipient", "type": "text"},
             {"key": "CURSOR_STRIPE_PORTAL_URL", "label": "Stripe portal URL (optional)", "type": "text"},
-            {"key": "CURSOR_SMTP_SERVER", "label": "SMTP server (override)", "type": "text"},
-            {"key": "CURSOR_EMAIL_FROM", "label": "From (override)", "type": "text"},
-            {"key": "CURSOR_EMAIL_PASSWORD", "label": "Password (override)", "type": "secret"},
         ],
     },
 ]
@@ -205,15 +204,26 @@ class Config:
             return str(specific).strip().lower() in _TRUE
         return self.get_bool("BILLS_HEADLESS", True)
 
-    def mail_for(self, addon: str) -> MailConfig:
-        up = addon.upper()
-        server = self.get(f"{up}_SMTP_SERVER") or self.get("BILLS_SMTP_SERVER")
-        port_raw = self.get(f"{up}_SMTP_PORT") or self.get("BILLS_SMTP_PORT", "587")
-        sender = self.get(f"{up}_EMAIL_FROM") or self.get("BILLS_EMAIL_FROM")
-        password = self.get(f"{up}_EMAIL_PASSWORD") or self.get("BILLS_EMAIL_PASSWORD")
-        recipient = self.get(f"{up}_EMAIL_TO") or self.get("BILLS_EMAIL_TO")
+    def mail_for(self, addon: str | None = None) -> MailConfig:
+        """Shared SMTP settings for every addon (``addon`` is ignored)."""
+        _ = addon
+        server = self._mail_value("BILLS_SMTP_SERVER")
+        port_raw = self._mail_value("BILLS_SMTP_PORT", default="587")
+        sender = self._mail_value("BILLS_EMAIL_FROM")
+        password = self._mail_value("BILLS_EMAIL_PASSWORD")
+        recipient = self._mail_value("BILLS_EMAIL_TO")
         try:
             port = int(port_raw)
         except ValueError:
             port = 587
         return MailConfig(server, port, sender, password, recipient)
+
+    def _mail_value(self, bills_key: str, default: str = "") -> str:
+        value = self.get(bills_key)
+        if value:
+            return value
+        for legacy in _LEGACY_MAIL_KEYS.get(bills_key, ()):
+            value = self.get(legacy)
+            if value:
+                return value
+        return default

@@ -131,10 +131,8 @@ DASHBOARD = LAYOUT_TOP + """
 
 <div class="card">
   <h2>Send mail</h2>
+  <p class="muted">All addons use the same SMTP settings from Config.</p>
   <form method="post" action="{{ url_for('mail_test') }}" class="row">
-    <select name="addon">
-      {% for a in known %}<option value="{{ a }}">{{ a }}</option>{% endfor %}
-    </select>
     <button type="submit" title="Send SMTP test message"><span class="sym">✉</span> Test email</button>
   </form>
   <div class="btn-group" style="margin-top:10px">
@@ -406,13 +404,12 @@ def create_app() -> Flask:
     @app.route("/mail/test", methods=["POST"])
     def mail_test():
         cfg = Config()
-        addon = request.form.get("addon", "vodafone")
-        mailer = Mailer(cfg.mail_for(addon))
+        mailer = Mailer(cfg.mail_for())
         ok, msg = mailer.send_text(
-            subject=f"bills test email ({addon})",
-            body=f"This is a test email from the bills app for the '{addon}' SMTP config.",
+            subject="bills test email",
+            body="This is a test email from the bills app (shared SMTP config).",
         )
-        flash(f"Test email ({addon}): {msg}", "ok" if ok else "err")
+        flash(f"Test email: {msg}", "ok" if ok else "err")
         return redirect(url_for("dashboard"))
 
     @app.route("/mail/resend/<addon>", methods=["POST"])

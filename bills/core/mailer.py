@@ -40,7 +40,7 @@ class Mailer:
         if not self.cfg.usable:
             print(
                 "  email skipped: SMTP not configured "
-                "(set *_SMTP_SERVER / *_EMAIL_FROM / *_EMAIL_PASSWORD / *_EMAIL_TO)",
+                "(set BILLS_SMTP_SERVER / BILLS_EMAIL_FROM / BILLS_EMAIL_PASSWORD / BILLS_EMAIL_TO)",
                 flush=True,
             )
             return False

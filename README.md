@@ -87,7 +87,7 @@ Key variables:
 - `BILLS_HEADLESS=true` — headless Playwright Chromium
 - `BILLS_DOWNLOAD_DIR=/downloads`, `BILLS_CONFIG_DIR=/config`
 - `FLARESOLVERR_ENABLED`, `FLARESOLVERR_URL`
-- SMTP: shared `BILLS_SMTP_*` or per-addon overrides
+- SMTP: shared `BILLS_SMTP_*` for all addons (same recipient/from/server for every plugin)
 
 ### Vodafone
 
