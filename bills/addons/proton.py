@@ -236,6 +236,15 @@ class ProtonAddon(Addon):
                 return name[5:]
         return None
 
+    def _auth_token_from_cookies(self) -> str | None:
+        uid = self._uid_from_cookies()
+        if not uid:
+            return None
+        for cookie in self.browser.context.cookies():
+            if cookie.get("name") == f"AUTH-{uid}":
+                return cookie.get("value")
+        return None
+
     def _prepare_invoices_session(self) -> None:
         """Open invoices page and capture Proton API headers from browser traffic."""
         captured_headers: dict[str, str] = {}
@@ -244,7 +253,13 @@ class ProtonAddon(Addon):
         def on_request(request) -> None:
             if "/api/" not in request.url:
                 return
-            for key in ("x-pm-appversion", "x-pm-uid", "x-pm-locale", "accept"):
+            for key in (
+                "x-pm-appversion",
+                "x-pm-uid",
+                "x-pm-locale",
+                "accept",
+                "authorization",
+            ):
                 val = request.headers.get(key)
                 if val:
                     captured_headers[key.lower()] = val
@@ -281,6 +296,11 @@ class ProtonAddon(Addon):
             self.page.remove_listener("response", on_response)
 
         uid = captured_headers.get("x-pm-uid") or self._uid_from_cookies()
+        auth = captured_headers.get("authorization")
+        if not auth:
+            token = self._auth_token_from_cookies()
+            if token:
+                auth = f"Bearer {token}"
         self._pm_headers = {
             "Accept": captured_headers.get("accept", PM_ACCEPT),
             "x-pm-appversion": captured_headers.get(
@@ -291,11 +311,14 @@ class ProtonAddon(Addon):
         }
         if uid:
             self._pm_headers["x-pm-uid"] = uid
+        if auth:
+            self._pm_headers["Authorization"] = auth
 
         self.log(
             "Proton API headers ready "
             f"(appversion={self._pm_headers['x-pm-appversion']}, "
-            f"uid={'set' if uid else 'missing'})"
+            f"uid={'set' if uid else 'missing'}, "
+            f"auth={'set' if auth else 'missing'})"
         )
 
     def _api_headers(self) -> dict[str, str]:
@@ -362,10 +385,15 @@ class ProtonAddon(Addon):
         seen: set[str] = set()
 
         def add_id(raw: str) -> None:
-            token = raw.strip().upper()
-            if len(token) >= 8 and token not in seen:
+            token = raw.strip()
+            if token.isdigit() and len(token) >= 4 and token not in seen:
                 seen.add(token)
                 ids.append(token)
+            elif re.fullmatch(r"[A-F0-9]{8,32}", token, re.I):
+                upper = token.upper()
+                if upper not in seen:
+                    seen.add(upper)
+                    ids.append(upper)
 
         try:
             found = self.page.evaluate(
@@ -373,8 +401,8 @@ class ProtonAddon(Addon):
                     const ids = new Set();
                     const add = (value) => {
                         if (!value) return;
-                        for (const match of String(value).matchAll(/\\b([A-F0-9]{8,32})\\b/gi)) {
-                            ids.add(match[1].toUpperCase());
+                        for (const match of String(value).matchAll(/\\b(\\d{4,})\\b/g)) {
+                            ids.add(match[1]);
                         }
                     };
                     for (const el of document.querySelectorAll(
@@ -399,9 +427,11 @@ class ProtonAddon(Addon):
 
         html = self.page.content()
         for pattern in (
+            r"/invoices/(\d{4,})",
             r"/invoices/([A-F0-9]{8,32})",
+            r'"ID"\s*:\s*"(\d{4,})"',
             r'"ID"\s*:\s*"([A-F0-9]{8,32})"',
-            r'"InvoiceID"\s*:\s*"([A-F0-9]{8,32})"',
+            r'"InvoiceID"\s*:\s*"(\d{4,})"',
         ):
             for match in re.findall(pattern, html, re.I):
                 add_id(match)
