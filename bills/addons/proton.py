@@ -229,21 +229,39 @@ class ProtonAddon(Addon):
         self.log("login timed out waiting for subscription page")
         return False
 
-    def _uid_from_cookies(self) -> str | None:
+    def _auth_pairs_from_cookies(self) -> list[tuple[str, str, str]]:
+        pairs: list[tuple[str, str, str]] = []
         for cookie in self.browser.context.cookies():
             name = cookie.get("name") or ""
-            if name.startswith("AUTH-"):
-                return name[5:]
-        return None
+            if not name.startswith("AUTH-"):
+                continue
+            uid = name[5:]
+            token = cookie.get("value")
+            domain = cookie.get("domain") or ""
+            if uid and token:
+                pairs.append((uid, token, domain))
+        pairs.sort(
+            key=lambda item: (
+                0 if item[2] == "account.proton.me" else 1,
+                0 if item[2].endswith("proton.me") else 1,
+            )
+        )
+        return pairs
+
+    def _auth_from_cookies(self) -> tuple[str | None, str | None]:
+        pairs = self._auth_pairs_from_cookies()
+        if not pairs:
+            return None, None
+        uid, token, _domain = pairs[0]
+        return uid, token
+
+    def _uid_from_cookies(self) -> str | None:
+        uid, _token = self._auth_from_cookies()
+        return uid
 
     def _auth_token_from_cookies(self) -> str | None:
-        uid = self._uid_from_cookies()
-        if not uid:
-            return None
-        for cookie in self.browser.context.cookies():
-            if cookie.get("name") == f"AUTH-{uid}":
-                return cookie.get("value")
-        return None
+        _uid, token = self._auth_from_cookies()
+        return token
 
     def _prepare_invoices_session(self) -> None:
         """Open invoices page and capture Proton API headers from browser traffic."""
@@ -295,9 +313,10 @@ class ProtonAddon(Addon):
             self.page.remove_listener("request", on_request)
             self.page.remove_listener("response", on_response)
 
-        uid = captured_headers.get("x-pm-uid") or self._uid_from_cookies()
+        uid, token = self._auth_from_cookies()
+        if not uid:
+            uid = captured_headers.get("x-pm-uid")
         auth: str | None = None
-        token = self._auth_token_from_cookies()
         if token:
             auth = f"Bearer {token}"
         elif captured_headers.get("authorization"):
