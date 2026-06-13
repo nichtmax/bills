@@ -50,7 +50,7 @@ LAYOUT_TOP = """<!doctype html>
   nav { background: #161a22; padding: 12px 20px; display: flex; gap: 18px; align-items: center;
         border-bottom: 1px solid #262b36; }
   nav .brand { font-weight: 700; font-size: 18px; margin-right: 10px; }
-  .container { max-width: 980px; margin: 22px auto; padding: 0 16px; }
+  .container { width: 100%; max-width: none; margin: 22px 0; padding: 0 16px; }
   .card { background: #161a22; border: 1px solid #262b36; border-radius: 10px;
           padding: 16px 18px; margin-bottom: 18px; }
   h1 { font-size: 20px; } h2 { font-size: 16px; margin: 0 0 12px; }
