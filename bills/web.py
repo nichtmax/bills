@@ -88,6 +88,9 @@ LAYOUT_TOP = """<!doctype html>
   .flash.ok { background: #14502a; } .flash.err { background: #5a1620; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   td, th { text-align: left; padding: 6px 8px; border-bottom: 1px solid #262b36; }
+  tr.inv-older { display: none; }
+  tr.inv-older.show { display: table-row; }
+  tr.inv-expand td { border-bottom: 1px solid #262b36; padding-top: 0; padding-bottom: 10px; }
 </style>
 </head>
 <body>
@@ -191,14 +194,16 @@ setInterval(poll, 2000);
 INVOICES_PAGE = LAYOUT_TOP + """
 <div class="card">
   <h1>Invoices</h1>
-  <p class="muted">{{ rows|length }} invoice(s) under {{ download_root }}.</p>
-  {% if rows %}
+  <p class="muted">{{ total }} invoice(s) under {{ download_root }}.
+     Showing latest per addon{% if hidden_count %} ({{ hidden_count }} older hidden){% endif %}.</p>
+  {% if groups %}
   <table>
     <tr>
       <th>Addon</th><th>Date</th><th>Added</th><th>Mailed</th><th>Sender protocol</th><th></th>
     </tr>
-    {% for r in rows %}
-    <tr>
+    {% for addon, invs in groups %}
+    {% for r in invs %}
+    <tr class="inv-row{% if not loop.first %} inv-older inv-older-{{ addon }}{% endif %}">
       <td>{{ r.addon }}</td>
       <td>{{ r.date }}</td>
       <td class="muted">{{ r.added }}</td>
@@ -231,11 +236,42 @@ INVOICES_PAGE = LAYOUT_TOP + """
       </td>
     </tr>
     {% endfor %}
+    {% if invs|length > 1 %}
+    <tr class="inv-expand">
+      <td colspan="6">
+        <button type="button" class="btn secondary sm inv-toggle inv-toggle-{{ addon }}"
+                data-addon="{{ addon }}" data-count="{{ invs|length - 1 }}" onclick="toggleInvoices('{{ addon }}')">
+          <span class="sym inv-toggle-icon-{{ addon }}">▸</span>
+          <span class="inv-toggle-label-{{ addon }}">Show {{ invs|length - 1 }} older</span>
+        </button>
+      </td>
+    </tr>
+    {% endif %}
+    {% endfor %}
   </table>
   {% else %}
   <p class="muted">No invoices found yet.</p>
   {% endif %}
 </div>
+<script>
+function toggleInvoices(addon) {
+  const rows = document.querySelectorAll('.inv-older-' + addon);
+  const btn = document.querySelector('.inv-toggle-' + addon);
+  const icon = document.querySelector('.inv-toggle-icon-' + addon);
+  const label = document.querySelector('.inv-toggle-label-' + addon);
+  const expanded = btn.dataset.expanded === '1';
+  rows.forEach(function(r) { r.classList.toggle('show', !expanded); });
+  btn.dataset.expanded = expanded ? '0' : '1';
+  const count = btn.dataset.count;
+  if (expanded) {
+    icon.textContent = '▸';
+    label.textContent = 'Show ' + count + ' older';
+  } else {
+    icon.textContent = '▾';
+    label.textContent = 'Hide older';
+  }
+}
+</script>
 """ + LAYOUT_BOT
 
 CONFIG_PAGE = LAYOUT_TOP + """
@@ -294,6 +330,14 @@ SCHEDULE_PAGE = LAYOUT_TOP + """
 
 def _known_addons(cfg: Config) -> list[str]:
     return sorted(set(cfg.enabled_addons()) | set(DEFAULT_CRON))
+
+
+def _group_invoices(rows):
+    """Group invoice rows by addon (date-desc within each group)."""
+    groups: dict[str, list] = {}
+    for row in rows:
+        groups.setdefault(row.addon, []).append(row)
+    return sorted(groups.items(), key=lambda item: item[1][0].sort_key(), reverse=True)
 
 
 def create_app() -> Flask:
@@ -428,9 +472,13 @@ def create_app() -> Flask:
     def invoices_view():
         cfg = Config()
         rows = list_invoices(cfg)
+        groups = _group_invoices(rows)
+        hidden_count = sum(len(invs) - 1 for _, invs in groups if len(invs) > 1)
         return render_template_string(
             INVOICES_PAGE,
-            rows=rows,
+            groups=groups,
+            total=len(rows),
+            hidden_count=hidden_count,
             download_root=cfg.download_root,
         )
 
