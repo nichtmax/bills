@@ -21,12 +21,15 @@ from pathlib import Path
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 from ..core.addon import Addon, RunResult
-from ..core.browser import inject_cookies
+from ..core.browser import USER_AGENT, inject_cookies
 
 INVOICES_PAGE = "https://account.protonvpn.com/subscription#invoices"
 LOGIN_URL = "https://account.proton.me/login"
 API_BASE = "https://account.proton.me/api"
 INVOICE_OWNER_USER = 0
+PM_ACCEPT = "application/vnd.protonmail.v1+json"
+PM_APPVERSION_FALLBACK = "web-account@5.0.0"
+PM_LOCALE_FALLBACK = "en_US"
 
 
 class AuthenticationError(Exception):
@@ -71,10 +74,18 @@ class ProtonAddon(Addon):
                 result.failed = 1
                 return result
 
-            invoices = self._list_invoices_api()
-            if invoices is None:
-                self.log("API listing failed, trying web UI")
-                invoices = self._list_invoices_ui()
+            self._pm_headers: dict[str, str] | None = None
+            self._captured_invoices: list[dict] = []
+            self._prepare_invoices_session()
+
+            if self._captured_invoices:
+                invoices = self._dedupe_invoices(self._captured_invoices)
+                self.log(f"using {len(invoices)} invoice(s) captured from page load")
+            else:
+                invoices = self._list_invoices_api()
+                if invoices is None:
+                    self.log("API listing failed, trying web UI")
+                    invoices = self._list_invoices_ui()
             if not invoices:
                 self.log("no invoices found")
                 return result
@@ -218,6 +229,91 @@ class ProtonAddon(Addon):
         self.log("login timed out waiting for subscription page")
         return False
 
+    def _uid_from_cookies(self) -> str | None:
+        for cookie in self.browser.context.cookies():
+            name = cookie.get("name") or ""
+            if name.startswith("AUTH-"):
+                return name[5:]
+        return None
+
+    def _prepare_invoices_session(self) -> None:
+        """Open invoices page and capture Proton API headers from browser traffic."""
+        captured_headers: dict[str, str] = {}
+        self._captured_invoices = []
+
+        def on_request(request) -> None:
+            if "/api/" not in request.url:
+                return
+            for key in ("x-pm-appversion", "x-pm-uid", "x-pm-locale", "accept"):
+                val = request.headers.get(key)
+                if val:
+                    captured_headers[key.lower()] = val
+
+        def on_response(response) -> None:
+            url = response.url
+            if "/payments/" not in url or "/invoices" not in url:
+                return
+            if response.request.method != "GET":
+                return
+            try:
+                if response.ok:
+                    payload = response.json()
+                    batch = payload.get("Invoices")
+                    if isinstance(batch, list):
+                        self._captured_invoices.extend(batch)
+            except Exception:
+                pass
+
+        self.page.on("request", on_request)
+        self.page.on("response", on_response)
+        try:
+            self.page.goto(INVOICES_PAGE, wait_until="domcontentloaded")
+            time.sleep(5)
+            try:
+                self.page.wait_for_selector(
+                    "[data-testid*='invoice' i], table, [class*='invoice' i]",
+                    timeout=15000,
+                )
+            except PlaywrightTimeout:
+                pass
+        finally:
+            self.page.remove_listener("request", on_request)
+            self.page.remove_listener("response", on_response)
+
+        uid = captured_headers.get("x-pm-uid") or self._uid_from_cookies()
+        self._pm_headers = {
+            "Accept": captured_headers.get("accept", PM_ACCEPT),
+            "x-pm-appversion": captured_headers.get(
+                "x-pm-appversion", PM_APPVERSION_FALLBACK
+            ),
+            "x-pm-locale": captured_headers.get("x-pm-locale", PM_LOCALE_FALLBACK),
+            "User-Agent": USER_AGENT,
+        }
+        if uid:
+            self._pm_headers["x-pm-uid"] = uid
+
+        self.log(
+            "Proton API headers ready "
+            f"(appversion={self._pm_headers['x-pm-appversion']}, "
+            f"uid={'set' if uid else 'missing'})"
+        )
+
+    def _api_headers(self) -> dict[str, str]:
+        if not self._pm_headers:
+            self._prepare_invoices_session()
+        return dict(self._pm_headers or {})
+
+    @staticmethod
+    def _dedupe_invoices(invoices: list[dict]) -> list[dict]:
+        seen: set[str] = set()
+        out: list[dict] = []
+        for inv in invoices:
+            invoice_id = str(inv.get("ID") or "").strip()
+            if invoice_id and invoice_id not in seen:
+                seen.add(invoice_id)
+                out.append(inv)
+        return out
+
     def _list_invoices_api(self) -> list[dict] | None:
         """Return invoice dicts from Proton payments API, or None on hard failure."""
         request = self.browser.context.request
@@ -232,7 +328,7 @@ class ProtonAddon(Addon):
                 f"?Page={page}&PageSize={page_size}&Owner={INVOICE_OWNER_USER}"
             )
             try:
-                resp = request.get(url, timeout=60000)
+                resp = request.get(url, headers=self._api_headers(), timeout=60000)
             except Exception as exc:  # noqa: BLE001
                 self.log(f"invoice API request failed: {exc}")
                 return None if page == 0 else collected
@@ -260,27 +356,71 @@ class ProtonAddon(Addon):
 
         return collected
 
+    def _parse_invoice_ids_from_page(self) -> list[str]:
+        """Extract invoice IDs from the loaded subscription#invoices page."""
+        ids: list[str] = []
+        seen: set[str] = set()
+
+        def add_id(raw: str) -> None:
+            token = raw.strip().upper()
+            if len(token) >= 8 and token not in seen:
+                seen.add(token)
+                ids.append(token)
+
+        try:
+            found = self.page.evaluate(
+                """() => {
+                    const ids = new Set();
+                    const add = (value) => {
+                        if (!value) return;
+                        for (const match of String(value).matchAll(/\\b([A-F0-9]{8,32})\\b/gi)) {
+                            ids.add(match[1].toUpperCase());
+                        }
+                    };
+                    for (const el of document.querySelectorAll(
+                        '[data-testid*="invoice" i], [data-id], a[href*="invoice" i], button'
+                    )) {
+                        add(el.getAttribute('data-id'));
+                        add(el.getAttribute('data-testid'));
+                        add(el.getAttribute('href'));
+                        add(el.textContent);
+                    }
+                    for (const row of document.querySelectorAll('tr, li, [role="row"]')) {
+                        const text = row.textContent || '';
+                        if (/invoice/i.test(text)) add(text);
+                    }
+                    return [...ids];
+                }"""
+            )
+            for token in found or []:
+                add_id(str(token))
+        except Exception:
+            pass
+
+        html = self.page.content()
+        for pattern in (
+            r"/invoices/([A-F0-9]{8,32})",
+            r'"ID"\s*:\s*"([A-F0-9]{8,32})"',
+            r'"InvoiceID"\s*:\s*"([A-F0-9]{8,32})"',
+        ):
+            for match in re.findall(pattern, html, re.I):
+                add_id(match)
+
+        return ids
+
     def _list_invoices_ui(self) -> list[dict]:
         """Scrape invoice IDs from the subscription page (fallback)."""
-        self.page.goto(INVOICES_PAGE, wait_until="domcontentloaded")
-        time.sleep(5)
+        if self._captured_invoices:
+            return self._dedupe_invoices(self._captured_invoices)
+
+        if "login" in self.page.url.lower() and "subscription" not in self.page.url.lower():
+            self.page.goto(INVOICES_PAGE, wait_until="domcontentloaded")
+            time.sleep(5)
         if "login" in self.page.url.lower() and "subscription" not in self.page.url.lower():
             self.log("not authenticated on subscription page")
             return []
 
-        # Proton renders invoice rows with action menus; collect stable IDs from links/buttons.
-        ids: list[str] = []
-        seen: set[str] = set()
-        for el in self.page.locator("[data-testid*='invoice'], tr, li").all():
-            try:
-                text = (el.text_content() or "").strip()
-                for match in re.findall(r"\b([A-F0-9]{8,})\b", text):
-                    if match not in seen and len(match) >= 8:
-                        seen.add(match)
-                        ids.append(match)
-            except Exception:
-                continue
-
+        ids = self._parse_invoice_ids_from_page()
         if not ids:
             self.log("could not parse invoice IDs from UI")
         return [{"ID": i} for i in ids]
@@ -298,7 +438,9 @@ class ProtonAddon(Addon):
     def _download_pdf_api(self, invoice_id: str) -> bytes | None:
         url = f"{API_BASE}/payments/v5/invoices/{invoice_id}"
         try:
-            resp = self.browser.context.request.get(url, timeout=120000)
+            resp = self.browser.context.request.get(
+                url, headers=self._api_headers(), timeout=120000
+            )
         except Exception as exc:  # noqa: BLE001
             self.log(f"PDF API error for {invoice_id}: {exc}")
             return None
