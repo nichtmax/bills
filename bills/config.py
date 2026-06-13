@@ -20,6 +20,7 @@ SCHEDULE_FILENAME = "schedule.json"
 DEFAULT_CRON = {
     "vodafone": "0 6 * * 1",   # weekly, Monday 06:00
     "cursor": "0 6 1 * *",     # monthly, 1st 06:00
+    "proton": "0 6 1 * *",     # monthly, 1st 06:00
 }
 
 # Keys whose values must never be rendered in plaintext in the web UI.
@@ -71,6 +72,16 @@ SETTINGS_SCHEMA = [
             {"key": "CURSOR_EMAIL", "label": "Email", "type": "text"},
             {"key": "CURSOR_PASSWORD", "label": "Password", "type": "secret"},
             {"key": "CURSOR_STRIPE_PORTAL_URL", "label": "Stripe portal URL (optional)", "type": "text"},
+        ],
+    },
+    {
+        "section": "Proton VPN",
+        "fields": [
+            {
+                "key": "PROTON_SESSION_COOKIES_FILE",
+                "label": "Session cookies file",
+                "type": "text",
+            },
         ],
     },
 ]

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from ..core.addon import Addon
 from .cursor import CursorAddon
+from .proton import ProtonAddon
 from .vodafone import VodafoneAddon
 
 REGISTRY: dict[str, type[Addon]] = {
     VodafoneAddon.name: VodafoneAddon,
     CursorAddon.name: CursorAddon,
+    ProtonAddon.name: ProtonAddon,
 }
 
 

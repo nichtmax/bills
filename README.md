@@ -11,6 +11,7 @@ Selenium Grid).
 |------------|-----------------------|-----------------------------------|----------------------|
 | `vodafone` | MeinVodafone (Angular)| username + password               | `/downloads/vodafone`|
 | `cursor`   | Stripe billing portal | session cookies (+ optional FlareSolverr) | `/downloads/cursor`  |
+| `proton`   | Proton VPN subscription | session cookies (Proton payments API) | `/downloads/proton`  |
 
 Invoices are saved as `YYYY-MM-DD <Provider> <number>.pdf`. Files are never
 re-downloaded if they already exist, and an email is only sent for **new**
@@ -31,7 +32,7 @@ bills/
     web.py                  # Flask web UI
     invoices.py             # invoice list helper
     core/                   # browser (Playwright), flaresolverr, mailer
-    addons/                 # vodafone.py, cursor.py
+    addons/                 # vodafone.py, cursor.py, proton.py
 ```
 
 ## Database
@@ -103,6 +104,17 @@ Cursor login is protected by Cloudflare Turnstile. Use session cookies:
 3. Place at `/config/cursor-session-cookies.json`.
 
 Alternatively set `CURSOR_STRIPE_PORTAL_URL` to skip login. FlareSolverr optional.
+
+### Proton VPN
+
+Invoices live at [account.protonvpn.com/subscription#invoices](https://account.protonvpn.com/subscription#invoices).
+Headless login is unreliable — use session cookies:
+
+1. Log in at account.proton.me or account.protonvpn.com in a normal browser.
+2. Export cookies for `.proton.me` / `.protonvpn.com` as JSON.
+3. Place at `/config/proton-session-cookies.json`.
+
+The addon lists invoices via Proton's payments API and downloads PDFs directly.
 
 ## Deployment (TrueNAS)
 
