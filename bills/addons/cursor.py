@@ -288,7 +288,15 @@ class CursorAddon(Addon):
             return False
         time.sleep(2)
         self.log(f"Stripe portal URL: {self.page.url}")
-        return "stripe.com" in self.page.url.lower()
+        if "stripe.com" not in self.page.url.lower():
+            return False
+        try:
+            self.page.wait_for_selector(
+                "a[href*='invoice.stripe.com/i/']", timeout=30000
+            )
+        except PlaywrightTimeout:
+            self.log("no invoice links visible on Stripe portal yet")
+        return True
 
     def _portal_invoice_links(self) -> list[tuple[str, str]]:
         links: list[tuple[str, str]] = []
