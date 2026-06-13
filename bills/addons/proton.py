@@ -296,11 +296,12 @@ class ProtonAddon(Addon):
             self.page.remove_listener("response", on_response)
 
         uid = captured_headers.get("x-pm-uid") or self._uid_from_cookies()
-        auth = captured_headers.get("authorization")
-        if not auth:
-            token = self._auth_token_from_cookies()
-            if token:
-                auth = f"Bearer {token}"
+        auth: str | None = None
+        token = self._auth_token_from_cookies()
+        if token:
+            auth = f"Bearer {token}"
+        elif captured_headers.get("authorization"):
+            auth = captured_headers["authorization"]
         self._pm_headers = {
             "Accept": captured_headers.get("accept", PM_ACCEPT),
             "x-pm-appversion": captured_headers.get(
