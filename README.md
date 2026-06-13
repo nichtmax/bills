@@ -74,7 +74,7 @@ python -m bills list              # list registered addons
 
 - **Dashboard** — trigger on-demand runs, live status/logs per addon.
 - **Invoices** — table from SQLite with mail status; download and Mail/Re-send buttons.
-- **Config** — edit settings persisted to `/config/settings.json` and per-addon cron schedules.
+- **Config** — edit settings persisted to `/config/settings.json`, per-addon cron schedules, and optional web login.
 - **Send mail** — test email and re-send latest invoice per addon.
 
 ## Configuration
@@ -86,6 +86,8 @@ Key variables:
 - `BILLS_ADDONS`, `BILLS_*_CRON`, `BILLS_RUN_ON_START`, `BILLS_TZ`
 - `BILLS_HEADLESS=true` — headless Playwright Chromium
 - `BILLS_DOWNLOAD_DIR=/downloads`, `BILLS_CONFIG_DIR=/config`
+- Web auth: `BILLS_WEB_USERNAME` (default `admin`), `BILLS_WEB_PASSWORD` (unset = no login required)
+- `BILLS_WEB_SECRET` — session signing key; change from default in production
 - `FLARESOLVERR_ENABLED`, `FLARESOLVERR_URL`
 - SMTP: shared `BILLS_SMTP_*` for all addons (same recipient/from/server for every plugin)
 - Mail templates: `BILLS_MAIL_SUBJECT` / `BILLS_MAIL_BODY` with placeholders

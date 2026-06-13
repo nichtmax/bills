@@ -34,6 +34,7 @@ from .config import (
 from .core.mailer import Mailer
 from .invoices import delete_invoice, list_invoices, mail_invoice, resolve_pdf_path
 from .runner import GLOBAL as runner
+from .web_auth import register_auth
 
 LAYOUT_TOP = """<!doctype html>
 <html lang="en">
@@ -107,6 +108,11 @@ LAYOUT_TOP = """<!doctype html>
           title="Browser notifications when addon runs finish">
     <span class="sym">🔔</span> <span id="notify-label">Enable</span>
   </button>
+  {% if logged_in %}
+  <form method="post" action="{{ url_for('logout') }}" style="display:inline">
+    <button type="submit" class="btn secondary sm" title="Sign out"><span class="sym">⎋</span> Logout</button>
+  </form>
+  {% endif %}
 </nav>
 <div class="container">
   {% with msgs = get_flashed_messages(with_categories=true) %}
@@ -513,6 +519,9 @@ def _save_schedules_from_form(addons: list[str]) -> list[str]:
 def create_app() -> Flask:
     app = Flask(__name__)
     app.secret_key = os.getenv("BILLS_WEB_SECRET", "bills-local-secret")
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    register_auth(app)
 
     @app.route("/")
     def dashboard():

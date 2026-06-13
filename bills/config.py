@@ -26,6 +26,7 @@ DEFAULT_CRON = {
 # Keys whose values must never be rendered in plaintext in the web UI.
 SECRET_KEYS = {
     "BILLS_EMAIL_PASSWORD",
+    "BILLS_WEB_PASSWORD",
     "VODAFONE_PASSWORT",
     "CURSOR_PASSWORD",
     "PROTON_PASSWORT",
@@ -42,6 +43,14 @@ _LEGACY_MAIL_KEYS = {
 
 # Schema that drives the web config form. Each field maps 1:1 to a settings key.
 SETTINGS_SCHEMA = [
+    {
+        "section": "Web UI",
+        "fields": [
+            {"key": "BILLS_WEB_USERNAME", "label": "Login username", "type": "text", "default": "admin"},
+            {"key": "BILLS_WEB_PASSWORD", "label": "Login password", "type": "secret"},
+        ],
+        "note": "Set a login password to require sign-in. Leave unset to keep the UI open.",
+    },
     {
         "section": "Browser / FlareSolverr",
         "fields": [
