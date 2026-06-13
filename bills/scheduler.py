@@ -1,85 +1,77 @@
-"""Env-configurable scheduler that runs each addon on its own cron.
+"""Env/file-configurable scheduler.
 
-Each scheduled trigger does a ``git pull`` and then runs the addon in a fresh
-subprocess (``python -m bills run <addon>``), so code is always up to date and
-one addon failing never kills the loop.
+Re-reads configuration (including ``/config/schedule.json``) on every loop
+iteration, so cron edits made via the web UI take effect within ~30s without a
+container rebuild. Each due addon runs through the shared RunManager (the same
+one the web UI uses), so status and logs are unified.
 """
 
 from __future__ import annotations
 
 import os
-import subprocess
-import sys
 import time
 from datetime import datetime
 
 from croniter import croniter
 
 from .config import Config
+from .runner import GLOBAL as runner
+
+POLL_SECONDS = 30
 
 
-def _now() -> datetime:
-    return datetime.now()
-
-
-def _git_pull(app_dir: str) -> None:
-    if not os.path.isdir(os.path.join(app_dir, ".git")):
+def _apply_tz(tz: str) -> None:
+    if not tz:
         return
+    os.environ["TZ"] = tz
     try:
-        out = subprocess.run(
-            ["git", "-C", app_dir, "pull", "--ff-only"],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        msg = (out.stdout or out.stderr).strip().splitlines()
-        print(f"[scheduler] git pull: {msg[-1] if msg else 'ok'}", flush=True)
-    except Exception as exc:  # noqa: BLE001
-        print(f"[scheduler] git pull failed: {exc}", flush=True)
+        time.tzset()
+    except AttributeError:
+        pass
 
 
-def run_addon_subprocess(addon: str, app_dir: str) -> int:
-    _git_pull(app_dir)
-    print(f"[scheduler] running addon '{addon}'", flush=True)
-    proc = subprocess.run([sys.executable, "-m", "bills", "run", addon], cwd=app_dir)
-    print(f"[scheduler] addon '{addon}' exited with {proc.returncode}", flush=True)
-    return proc.returncode
+def next_runs(cfg: Config, base: datetime) -> dict[str, datetime]:
+    out: dict[str, datetime] = {}
+    for addon in cfg.enabled_addons():
+        try:
+            out[addon] = croniter(cfg.cron(addon), base).get_next(datetime)
+        except (ValueError, KeyError):
+            continue
+    return out
 
 
 def schedule(config: Config | None = None) -> None:
-    config = config or Config()
-    if config.tz:
-        os.environ["TZ"] = config.tz
-        try:
-            time.tzset()
-        except AttributeError:
-            pass
-
-    addons = config.enabled_addons()
-    if not addons:
-        print("[scheduler] no addons enabled (BILLS_ADDONS empty)", flush=True)
-        return
-
-    base = _now()
-    iterators = {a: croniter(config.cron(a), base) for a in addons}
-    next_run = {a: iterators[a].get_next(datetime) for a in addons}
+    cfg = config or Config()
+    _apply_tz(cfg.tz)
 
     print("[scheduler] starting. Schedule:", flush=True)
-    for a in addons:
-        print(f"  - {a}: cron '{config.cron(a)}' next {next_run[a]:%Y-%m-%d %H:%M}", flush=True)
+    for addon, when in next_runs(cfg, datetime.now()).items():
+        print(f"  - {addon}: cron '{cfg.cron(addon)}' next {when:%Y-%m-%d %H:%M}", flush=True)
 
-    if config.run_on_start:
-        print("[scheduler] BILLS_RUN_ON_START=true -> running all addons now", flush=True)
-        for a in addons:
-            run_addon_subprocess(a, config.app_dir)
+    if cfg.run_on_start:
+        print("[scheduler] BILLS_RUN_ON_START=true -> running all enabled now", flush=True)
+        for addon in cfg.enabled_addons():
+            runner.run(addon, trigger="run-on-start")
 
     while True:
-        due_addon = min(next_run, key=next_run.get)
-        due_time = next_run[due_addon]
-        sleep_for = max(0.0, (due_time - _now()).total_seconds())
-        time.sleep(min(sleep_for, 3600))
-        if _now() < due_time:
+        cfg = Config()  # re-read settings.json + schedule.json each iteration
+        _apply_tz(cfg.tz)
+        now = datetime.now()
+        upcoming = next_runs(cfg, now)
+        if not upcoming:
+            time.sleep(POLL_SECONDS)
             continue
-        run_addon_subprocess(due_addon, config.app_dir)
-        next_run[due_addon] = iterators[due_addon].get_next(datetime)
-        print(f"[scheduler] next {due_addon} run: {next_run[due_addon]:%Y-%m-%d %H:%M}", flush=True)
+
+        due = min(upcoming, key=upcoming.get)
+        due_time = upcoming[due]
+        wait = (due_time - now).total_seconds()
+        if wait > POLL_SECONDS:
+            time.sleep(POLL_SECONDS)
+            continue
+        if wait > 0:
+            time.sleep(wait)
+        if runner.run(due, trigger="schedule"):
+            print(f"[scheduler] ran {due} (schedule)", flush=True)
+        else:
+            # Already running (e.g. manual trigger); avoid a tight loop.
+            time.sleep(POLL_SECONDS)

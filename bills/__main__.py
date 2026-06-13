@@ -1,7 +1,8 @@
 """bills CLI.
 
 Usage:
-  python -m bills schedule              # run the built-in scheduler loop
+  python -m bills schedule              # web UI (thread) + scheduler loop
+  python -m bills web                   # web UI only (no scheduler)
   python -m bills run <addon> [...]     # run one or more addons once
   python -m bills run                   # run all enabled addons once
   python -m bills list                  # list registered addons
@@ -41,7 +42,15 @@ def main(argv: list[str] | None = None) -> int:
     cmd = argv[0] if argv else "schedule"
 
     if cmd == "schedule":
+        from .web import start_web_in_thread
+
+        start_web_in_thread()
         schedule()
+        return 0
+    if cmd == "web":
+        from .web import run_web
+
+        run_web()
         return 0
     if cmd == "run":
         return _run(argv[1:])

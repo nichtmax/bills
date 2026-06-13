@@ -32,11 +32,34 @@ bills/
 ## CLI
 
 ```bash
-python -m bills schedule          # run the scheduler loop (default)
+python -m bills schedule          # web UI (thread) + scheduler loop (default)
+python -m bills web               # web UI only
 python -m bills run cursor        # run one addon once
 python -m bills run               # run all enabled addons once
 python -m bills list              # list registered addons
 ```
+
+## Web UI
+
+`python -m bills schedule` also starts a small Flask UI (bound to
+`0.0.0.0:${BILLS_WEB_PORT:-8080}`) in a daemon thread, sharing the same config
+and run manager as the scheduler. It provides:
+
+- **Dashboard** — trigger on-demand runs (`vodafone` / `cursor` / all enabled)
+  in the background, with a live status badge and streaming log per addon
+  (polled from `/api/runs`).
+- **Config** — view the effective configuration and edit user-writable settings.
+  Saving writes `/config/settings.json`, which `config.py` prefers over env vars
+  (resolution: `settings.json` → env → default), so edits survive restarts.
+  Secrets are write-only (shown as set/unset, never echoed).
+- **Send mail** — send a test email per addon (verifies SMTP), plus a
+  "re-send latest invoice" action per addon.
+- **Schedules** — edit per-addon cron expressions (validated with `croniter`),
+  saved to `/config/schedule.json`. The scheduler re-reads this every loop
+  (~30s), so changes take effect without a rebuild.
+
+Persisted config files live on the `/config` dataset:
+`settings.json`, `schedule.json`, and `logs/<addon>-last.log`.
 
 ## Configuration
 

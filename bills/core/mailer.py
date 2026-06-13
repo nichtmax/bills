@@ -16,6 +16,26 @@ class Mailer:
     def __init__(self, cfg: MailConfig) -> None:
         self.cfg = cfg
 
+    def send_text(self, subject: str, body: str) -> tuple[bool, str]:
+        """Send a plain-text message. Returns (ok, message)."""
+        if not self.cfg.usable:
+            return False, (
+                "SMTP not configured (server/from/password/recipient missing)"
+            )
+        msg = MIMEMultipart()
+        msg["From"] = self.cfg.sender
+        msg["To"] = self.cfg.recipient
+        msg["Subject"] = subject
+        msg.attach(MIMEText(body, "plain", "utf-8"))
+        try:
+            with smtplib.SMTP(self.cfg.server, self.cfg.port) as server:
+                server.starttls()
+                server.login(self.cfg.sender, self.cfg.password)
+                server.send_message(msg)
+            return True, f"sent to {self.cfg.recipient}"
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
     def send_pdf(self, pdf_path: str, subject: str, body: str) -> bool:
         if not self.cfg.usable:
             print(
