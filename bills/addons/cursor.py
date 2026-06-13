@@ -124,8 +124,6 @@ class CursorAddon(Addon):
         if not cookies:
             return False
         self.log(f"trying session cookies ({len(cookies)} exported)")
-        self.driver.get(BILLING_URL)
-        time.sleep(2)
         added = inject_cookies(self.driver, cookies, log=self.log)
         self.log(f"injected {added} cookies")
         self.driver.get(BILLING_URL)

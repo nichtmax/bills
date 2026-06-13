@@ -102,16 +102,32 @@ def normalize_cookie(cookie: dict) -> dict | None:
 
 
 def inject_cookies(driver: webdriver.Remote, cookies: list[dict], log=print) -> int:
-    """Add cookies to the current driver session. Driver must already be on a
-    page whose domain matches the cookies (navigate there first)."""
-    added = 0
+    """Inject exported cookies, visiting each domain first as Selenium requires.
+
+    add_cookie only accepts cookies whose domain matches the currently loaded
+    page, so we group cookies by host and navigate to ``https://<host>/`` before
+    adding that host's cookies (with the ``domain`` key stripped)."""
+    by_domain: dict[str, list[dict]] = {}
     for raw in cookies:
         norm = normalize_cookie(raw)
         if not norm:
             continue
-        try:
-            driver.add_cookie(norm)
-            added += 1
-        except Exception as exc:  # noqa: BLE001
-            log(f"  cookie '{norm.get('name')}' skipped: {exc}")
+        host = (norm.get("domain") or "").lstrip(".")
+        by_domain.setdefault(host, []).append(norm)
+
+    added = 0
+    for host, domain_cookies in by_domain.items():
+        if host:
+            try:
+                driver.get(f"https://{host}/")
+            except Exception as exc:  # noqa: BLE001
+                log(f"  could not open https://{host}/: {exc}")
+                continue
+        for cookie in domain_cookies:
+            payload = {k: v for k, v in cookie.items() if k != "domain"}
+            try:
+                driver.add_cookie(payload)
+                added += 1
+            except Exception as exc:  # noqa: BLE001
+                log(f"  cookie '{cookie.get('name')}' @ {host or 'current'} skipped: {exc}")
     return added
