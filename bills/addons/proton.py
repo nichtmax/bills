@@ -485,7 +485,7 @@ class ProtonAddon(Addon):
                 pass
         return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    def _download_pdf_api(self, invoice_id: str) -> bytes | None:
+    def _download_pdf_api(self, invoice_id: str) -> tuple[bytes | None, int | None]:
         url = f"{API_BASE}/payments/v5/invoices/{invoice_id}"
         try:
             resp = self.browser.context.request.get(
@@ -493,15 +493,15 @@ class ProtonAddon(Addon):
             )
         except Exception as exc:  # noqa: BLE001
             self.log(f"PDF API error for {invoice_id}: {exc}")
-            return None
+            return None, None
         if not resp.ok:
             self.log(f"PDF API HTTP {resp.status} for {invoice_id}")
-            return None
+            return None, resp.status
         body = resp.body()
         if body.startswith(b"%PDF"):
-            return body
+            return body, resp.status
         self.log(f"PDF API returned non-PDF for {invoice_id}")
-        return None
+        return None, resp.status
 
     def _download_pdf_ui(self, invoice_id: str) -> Path | None:
         """Last-resort: trigger browser download from the invoices page."""
@@ -547,7 +547,12 @@ class ProtonAddon(Addon):
             result.skipped += 1
             return
 
-        pdf_bytes = self._download_pdf_api(invoice_id)
+        pdf_bytes, status = self._download_pdf_api(invoice_id)
+        if status == 404:
+            self.log(f"PDF not available for {invoice_id}, skipping")
+            self.store.ensure_entry(invoice_id, target.name)
+            result.skipped += 1
+            return
         if pdf_bytes:
             target.write_bytes(pdf_bytes)
         else:
