@@ -264,6 +264,20 @@ class ProtonAddon(Addon):
         _uid, token = self._auth_from_cookies()
         return token
 
+    def _appversion_from_page(self) -> str | None:
+        try:
+            version = self.page.evaluate(
+                """() => {
+                    const match = document.body.innerText.match(/Version\\s+(\\d+\\.\\d+\\.\\d+\\.\\d+)/i);
+                    return match ? match[1] : null;
+                }"""
+            )
+            if version:
+                return f"web-account@{version}"
+        except Exception:
+            pass
+        return None
+
     def _prepare_invoices_session(self) -> None:
         """Open invoices page and capture Proton API headers from browser traffic."""
         captured_headers: dict[str, str] = {}
@@ -301,11 +315,23 @@ class ProtonAddon(Addon):
         self.page.on("request", on_request)
         self.page.on("response", on_response)
         try:
-            self.page.goto(INVOICES_PAGE, wait_until="domcontentloaded")
-            time.sleep(5)
+            try:
+                with self.page.expect_response(
+                    lambda r: (
+                        "/payments/" in r.url
+                        and "/invoices" in r.url
+                        and r.request.method == "GET"
+                        and "?" in r.url
+                    ),
+                    timeout=30000,
+                ):
+                    self.page.goto(INVOICES_PAGE, wait_until="domcontentloaded")
+            except PlaywrightTimeout:
+                self.page.goto(INVOICES_PAGE, wait_until="domcontentloaded")
+                time.sleep(5)
             try:
                 self.page.wait_for_selector(
-                    "[data-testid*='invoice' i], table, [class*='invoice' i]",
+                    "[data-testid*='invoice' i], table tbody tr, [class*='invoice' i]",
                     timeout=15000,
                 )
             except PlaywrightTimeout:
@@ -313,6 +339,11 @@ class ProtonAddon(Addon):
         finally:
             self.page.remove_listener("request", on_request)
             self.page.remove_listener("response", on_response)
+
+        if "x-pm-appversion" not in captured_headers:
+            page_version = self._appversion_from_page()
+            if page_version:
+                captured_headers["x-pm-appversion"] = page_version
 
         uid, token = self._auth_from_cookies()
         if not uid:
@@ -422,6 +453,9 @@ class ProtonAddon(Addon):
                     const ids = new Set();
                     const add = (value) => {
                         if (!value) return;
+                    for (const match of String(value).matchAll(/\\bID(\\d{4,})\\b/gi)) {
+                            ids.add(match[1]);
+                        }
                         for (const match of String(value).matchAll(/\\b(\\d{4,})\\b/g)) {
                             ids.add(match[1]);
                         }
@@ -453,6 +487,7 @@ class ProtonAddon(Addon):
             r'"ID"\s*:\s*"(\d{4,})"',
             r'"ID"\s*:\s*"([A-F0-9]{8,32})"',
             r'"InvoiceID"\s*:\s*"(\d{4,})"',
+            r"\bID(\d{4,})\b",
         ):
             for match in re.findall(pattern, html, re.I):
                 add_id(match)
