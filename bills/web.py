@@ -48,8 +48,9 @@ LAYOUT_TOP = """<!doctype html>
          margin: 0; background: #0f1115; color: #e6e6e6; }
   a { color: #6ea8fe; text-decoration: none; }
   nav { background: #161a22; padding: 12px 20px; display: flex; gap: 18px; align-items: center;
-        border-bottom: 1px solid #262b36; }
+        border-bottom: 1px solid #262b36; flex-wrap: wrap; }
   nav .brand { font-weight: 700; font-size: 18px; margin-right: 10px; }
+  nav .nav-spacer { flex: 1; }
   .container { width: 100%; max-width: none; margin: 22px 0; padding: 0 16px; }
   .card { background: #161a22; border: 1px solid #262b36; border-radius: 10px;
           padding: 16px 18px; margin-bottom: 18px; }
@@ -81,6 +82,7 @@ LAYOUT_TOP = """<!doctype html>
   .b-idle { background: #2a2f3a; color: #aab; }
   .b-running { background: #6b4a00; color: #ffd479; }
   .b-success { background: #14502a; color: #7be0a3; }
+  .b-failed { background: #5a1620; color: #ffb4b4; }
   .b-tracked { background: #14502a; color: #7be0a3; }
   .b-file-only { background: #2a3a5a; color: #8ab4f8; }
   .b-missing { background: #5a4a16; color: #ffd479; }
@@ -101,6 +103,11 @@ LAYOUT_TOP = """<!doctype html>
   <a href="{{ url_for('invoices_view') }}">📄 Invoices</a>
   <a href="{{ url_for('config_view') }}">⚙ Config</a>
   <a href="{{ url_for('schedule_view') }}">📅 Schedules</a>
+  <span class="nav-spacer"></span>
+  <button type="button" class="btn secondary sm" id="notify-enable" style="display:none"
+          title="Browser notifications when addon runs finish">
+    <span class="sym">🔔</span> <span id="notify-label">Enable</span>
+  </button>
 </nav>
 <div class="container">
   {% with msgs = get_flashed_messages(with_categories=true) %}
@@ -112,6 +119,175 @@ LAYOUT_TOP = """<!doctype html>
 
 LAYOUT_BOT = """
 </div>
+<script>
+(function() {
+  const lastRunState = {};
+  let notifyInitialized = false;
+  let notificationsEnabled = localStorage.getItem("bills-notifications") === "1";
+
+  function parseRunSummary(log) {
+    const lines = String(log || "").split("\\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const m = lines[i].match(/=== (\\w+) done: downloaded=(\\d+) skipped=(\\d+) failed=(\\d+) ===/);
+      if (m) {
+        return {
+          addon: m[1],
+          downloaded: Number(m[2]),
+          skipped: Number(m[3]),
+          failed: Number(m[4]),
+        };
+      }
+    }
+    return null;
+  }
+
+  function updateNotifyButton() {
+    const btn = document.getElementById("notify-enable");
+    const label = document.getElementById("notify-label");
+    if (!btn || !label) return;
+    if (!("Notification" in window)) {
+      btn.style.display = "none";
+      return;
+    }
+    btn.style.display = "inline-flex";
+    btn.classList.remove("success", "secondary");
+    if (Notification.permission === "granted" && notificationsEnabled) {
+      btn.classList.add("success");
+      label.textContent = "On";
+      btn.title = "Browser notifications enabled";
+    } else if (Notification.permission === "denied") {
+      btn.classList.add("secondary");
+      label.textContent = "Blocked";
+      btn.disabled = true;
+      btn.title = "Notifications blocked in browser settings";
+    } else {
+      btn.classList.add("secondary");
+      label.textContent = "Enable";
+      btn.disabled = false;
+      btn.title = "Enable browser notifications for completed runs";
+    }
+  }
+
+  async function requestNotificationPermission() {
+    if (!("Notification" in window)) return false;
+    if (Notification.permission === "granted") {
+      notificationsEnabled = true;
+      localStorage.setItem("bills-notifications", "1");
+      updateNotifyButton();
+      return true;
+    }
+    if (Notification.permission === "denied") {
+      updateNotifyButton();
+      return false;
+    }
+    const permission = await Notification.requestPermission();
+    notificationsEnabled = permission === "granted";
+    if (notificationsEnabled) {
+      localStorage.setItem("bills-notifications", "1");
+    } else {
+      localStorage.removeItem("bills-notifications");
+    }
+    updateNotifyButton();
+    return notificationsEnabled;
+  }
+
+  function showRunNotification(addon, status) {
+    if (!notificationsEnabled || Notification.permission !== "granted") return;
+    const summary = parseRunSummary(status.log);
+    let title;
+    let body;
+    if (status.state === "failed") {
+      title = "bills: " + addon + " failed";
+      const tail = String(status.log || "").split("\\n").filter(Boolean).slice(-2).join(" · ");
+      body = tail || "Run failed";
+    } else if (summary && summary.downloaded > 0) {
+      title = "bills: " + summary.downloaded + " new invoice(s)";
+      body = addon + " downloaded " + summary.downloaded + ", skipped " + summary.skipped;
+    } else if (summary && summary.failed > 0) {
+      title = "bills: " + addon + " finished with errors";
+      body = "downloaded " + summary.downloaded + ", failed " + summary.failed;
+    } else {
+      title = "bills: " + addon + " complete";
+      body = summary
+        ? "No new invoices (skipped " + summary.skipped + ")"
+        : "Run finished successfully";
+    }
+    try {
+      new Notification(title, {
+        body: body,
+        tag: "bills-run-" + addon + "-" + status.finished,
+      });
+    } catch (e) {}
+  }
+
+  function updateDashboard(statusMap) {
+    const addons = window.BILLS_DASHBOARD_ADDONS || Object.keys(statusMap);
+    for (const addon of addons) {
+      const status = statusMap[addon];
+      const badge = document.getElementById("badge-" + addon);
+      const meta = document.getElementById("meta-" + addon);
+      const log = document.getElementById("log-" + addon);
+      if (!status || !badge || !meta || !log) continue;
+      badge.textContent = status.state;
+      badge.className = "badge b-" + status.state;
+      let metaText = "";
+      if (status.started) metaText += "started " + status.started;
+      if (status.finished) metaText += " · finished " + status.finished;
+      if (status.returncode !== null && status.returncode !== undefined) {
+        metaText += " · rc=" + status.returncode;
+      }
+      if (status.trigger) metaText += " · " + status.trigger;
+      meta.textContent = metaText || "—";
+      if (status.log) {
+        const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
+        log.textContent = status.log;
+        if (atBottom) log.scrollTop = log.scrollHeight;
+      }
+    }
+  }
+
+  async function pollRuns() {
+    try {
+      const response = await fetch("/api/runs");
+      const data = await response.json();
+      updateDashboard(data);
+      for (const [addon, status] of Object.entries(data)) {
+        if (!notifyInitialized) {
+          lastRunState[addon] = { state: status.state, finished: status.finished };
+          continue;
+        }
+        const prev = lastRunState[addon];
+        if (
+          prev &&
+          prev.state === "running" &&
+          status.state !== "running" &&
+          status.finished &&
+          status.finished !== prev.finished
+        ) {
+          showRunNotification(addon, status);
+        }
+        lastRunState[addon] = { state: status.state, finished: status.finished };
+      }
+      notifyInitialized = true;
+    } catch (e) {}
+  }
+
+  const notifyBtn = document.getElementById("notify-enable");
+  if (notifyBtn) {
+    notifyBtn.addEventListener("click", requestNotificationPermission);
+  }
+  updateNotifyButton();
+  if (notificationsEnabled && Notification.permission === "granted") {
+    // already enabled
+  } else if (notificationsEnabled && Notification.permission === "default") {
+    notificationsEnabled = false;
+    localStorage.removeItem("bills-notifications");
+    updateNotifyButton();
+  }
+  pollRuns();
+  setInterval(pollRuns, 2000);
+})();
+</script>
 </body>
 </html>
 """
@@ -159,37 +335,7 @@ DASHBOARD = LAYOUT_TOP + """
 </div>
 {% endfor %}
 
-<script>
-const ADDONS = {{ known|tojson }};
-async function poll() {
-  try {
-    const r = await fetch("{{ url_for('api_runs') }}");
-    const data = await r.json();
-    for (const a of ADDONS) {
-      const s = data[a];
-      const badge = document.getElementById("badge-" + a);
-      const meta = document.getElementById("meta-" + a);
-      const log = document.getElementById("log-" + a);
-      if (!s) { continue; }
-      badge.textContent = s.state;
-      badge.className = "badge b-" + s.state;
-      let m = "";
-      if (s.started) m += "started " + s.started;
-      if (s.finished) m += " · finished " + s.finished;
-      if (s.returncode !== null && s.returncode !== undefined) m += " · rc=" + s.returncode;
-      if (s.trigger) m += " · " + s.trigger;
-      meta.textContent = m || "—";
-      if (s.log) {
-        const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
-        log.textContent = s.log;
-        if (atBottom) log.scrollTop = log.scrollHeight;
-      }
-    }
-  } catch (e) {}
-}
-poll();
-setInterval(poll, 2000);
-</script>
+<script>window.BILLS_DASHBOARD_ADDONS = {{ known|tojson }};</script>
 """ + LAYOUT_BOT
 
 INVOICES_PAGE = LAYOUT_TOP + """
