@@ -23,17 +23,16 @@ from flask import (
 from croniter import croniter
 from datetime import datetime
 
+from . import db
 from .config import (
     DEFAULT_CRON,
     SETTINGS_SCHEMA,
     Config,
-    load_schedule,
     load_settings,
-    save_schedule,
     save_settings,
 )
 from .core.mailer import Mailer
-from .invoices import list_invoices, mail_invoice, resolve_pdf_path
+from .invoices import delete_invoice, list_invoices, mail_invoice, resolve_pdf_path
 from .runner import GLOBAL as runner
 
 LAYOUT_TOP = """<!doctype html>
@@ -70,7 +69,7 @@ LAYOUT_TOP = """<!doctype html>
   .b-idle { background: #2a2f3a; color: #aab; }
   .b-running { background: #6b4a00; color: #ffd479; }
   .b-success { background: #14502a; color: #7be0a3; }
-  .b-manifest { background: #14502a; color: #7be0a3; }
+  .b-tracked { background: #14502a; color: #7be0a3; }
   .b-file-only { background: #2a3a5a; color: #8ab4f8; }
   .b-missing { background: #5a4a16; color: #ffd479; }
   .muted { color: #889; font-size: 12px; }
@@ -182,7 +181,7 @@ INVOICES_PAGE = LAYOUT_TOP + """
 <div class="card">
   <h1>Invoices</h1>
   <p class="muted">{{ rows|length }} PDF(s) under {{ download_root }}. Status:
-     <span class="badge b-manifest">manifest</span> tracked in .manifest.json,
+     <span class="badge b-tracked">tracked</span> in SQLite,
      <span class="badge b-file-only">file-only</span> on disk only.</p>
   {% if rows %}
   <table>
@@ -198,17 +197,21 @@ INVOICES_PAGE = LAYOUT_TOP + """
       <td>{{ r.number }}</td>
       <td>{{ r.filename }}</td>
       <td class="muted">{{ r.added }}</td>
-      <td><span class="badge {% if r.status == 'manifest' %}b-manifest{% elif 'missing' in r.status %}b-missing{% else %}b-file-only{% endif %}">{{ r.status }}</span></td>
+      <td><span class="badge {% if r.status == 'tracked' %}b-tracked{% elif 'missing' in r.status %}b-missing{% else %}b-file-only{% endif %}">{{ r.status }}</span></td>
       <td class="muted">
         {% if r.mailed %}Yes{% if r.mailed_at %}<br><small>{{ r.mailed_at }}</small>{% endif %}{% else %}No{% endif %}
       </td>
       <td class="row" style="gap:6px">
-        {% if r.status != 'manifest (missing file)' %}
+        {% if r.file_exists %}
         <a href="{{ url_for('invoice_download', addon=r.addon, filename=r.filename) }}">Download</a>
         <form method="post" action="{{ url_for('invoice_mail', addon=r.addon, filename=r.filename) }}" style="display:inline">
           <button class="secondary" type="submit">{{ 'Re-send' if r.mailed else 'Mail' }}</button>
         </form>
         {% else %}—{% endif %}
+        <form method="post" action="{{ url_for('invoice_delete', addon=r.addon, filename=r.filename) }}" style="display:inline"
+              onsubmit="return confirm('Delete {{ r.filename }}? This cannot be undone.');">
+          <button class="warn" type="submit">Delete</button>
+        </form>
       </td>
     </tr>
     {% endfor %}
@@ -252,7 +255,7 @@ CONFIG_PAGE = LAYOUT_TOP + """
 SCHEDULE_PAGE = LAYOUT_TOP + """
 <div class="card">
   <h1>Schedules</h1>
-  <p class="muted">Per-addon cron expressions. Saved to {{ config_dir }}/schedule.json and
+  <p class="muted">Per-addon cron expressions. Saved to SQLite (<code>bills.db</code> schedules table) and
      picked up by the running scheduler within ~30s.</p>
   <form method="post">
     <table>
@@ -354,21 +357,19 @@ def create_app() -> Flask:
         cfg = Config()
         addons = _known_addons(cfg)
         if request.method == "POST":
-            sched = load_schedule()
             errors = []
             for a in addons:
                 expr = request.form.get(f"cron_{a}", "").strip()
                 if not expr:
-                    sched.pop(a, None)
+                    db.delete_schedule(a)
                     continue
                 if not croniter.is_valid(expr):
                     errors.append(f"{a}: invalid cron '{expr}'")
                     continue
-                sched[a] = expr
+                db.set_schedule(a, expr)
             if errors:
                 flash("; ".join(errors), "err")
             else:
-                save_schedule(sched)
                 flash("Schedules saved", "ok")
             return redirect(url_for("schedule_view"))
 
@@ -431,6 +432,13 @@ def create_app() -> Flask:
     def invoice_mail(addon, filename):
         cfg = Config()
         ok, msg = mail_invoice(cfg, addon, filename)
+        flash(f"{filename}: {msg}", "ok" if ok else "err")
+        return redirect(url_for("invoices_view"))
+
+    @app.route("/invoices/<addon>/<filename>/delete", methods=["POST"])
+    def invoice_delete(addon, filename):
+        cfg = Config()
+        ok, msg = delete_invoice(cfg, addon, filename)
         flash(f"{filename}: {msg}", "ok" if ok else "err")
         return redirect(url_for("invoices_view"))
 

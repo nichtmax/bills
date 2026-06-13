@@ -14,10 +14,19 @@ import sys
 
 from .addons import REGISTRY, get_addon
 from .config import Config
+from . import db
 from .scheduler import schedule
 
 
+def _init_db() -> None:
+    cfg = Config()
+    db.init_db()
+    result = db.migrate_all(cfg.download_root)
+    print(f"[db] {db.db_path()} ready — {result}", flush=True)
+
+
 def _run(names: list[str]) -> int:
+    _init_db()
     config = Config()
     if not names:
         names = config.enabled_addons()
@@ -42,12 +51,14 @@ def main(argv: list[str] | None = None) -> int:
     cmd = argv[0] if argv else "schedule"
 
     if cmd == "schedule":
+        _init_db()
         from .web import start_web_in_thread
 
         start_web_in_thread()
         schedule()
         return 0
     if cmd == "web":
+        _init_db()
         from .web import run_web
 
         run_web()

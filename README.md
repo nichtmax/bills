@@ -14,7 +14,7 @@ Selenium Grid).
 
 Invoices are saved as `YYYY-MM-DD <Provider> <number>.pdf`. Files are never
 re-downloaded if they already exist, and an email is only sent for **new**
-invoices (tracked in a per-addon `.manifest.json`).
+invoices. All invoice and mail metadata lives in SQLite (`/config/bills.db`).
 
 ## Layout
 
@@ -25,12 +25,36 @@ bills/
   bills/
     __main__.py             # CLI: schedule | run <addon> | list
     config.py               # env + settings.json parsing
+    db.py                   # SQLite schema, migration, CRUD
+    store.py                # InvoiceStore (replaces .manifest.json)
     scheduler.py            # croniter loop
     web.py                  # Flask web UI
     invoices.py             # invoice list helper
-    core/                   # browser (Playwright), flaresolverr, mailer, manifest
+    core/                   # browser (Playwright), flaresolverr, mailer
     addons/                 # vodafone.py, cursor.py
 ```
+
+## Database
+
+**Path:** `/config/bills.db` (WAL mode, on the ZFS config mount)
+
+| Table         | Purpose |
+|---------------|---------|
+| `invoices`    | One row per known invoice (addon, key, filename, dates, file path, sha256) |
+| `mail_events` | SMTP send history per invoice (recipient, subject, sent_at, success) |
+| `runs`        | Addon run log (started/finished, exit code, trigger, log summary) |
+| `schedules`   | Per-addon cron expressions |
+| `settings`    | Optional operational key/value store (secrets stay in `settings.json`) |
+| `schema_meta` | Migration markers |
+
+**Migration (first startup):** existing `.manifest.json` files → `invoices` +
+inferred `mail_events` (legacy entries treated as already mailed); orphan PDFs
+scanned into `invoices`; `schedule.json` → `schedules`; `/config/logs/*-last.log`
+→ `runs`.
+
+**Retired:** per-addon `.manifest.json` writes (read-only migration source).
+**Kept:** `/config/settings.json` (secrets, web config form), `/config/logs/*.log`
+(latest run text files, also summarized in `runs`).
 
 ## CLI
 
@@ -48,10 +72,9 @@ python -m bills list              # list registered addons
 `0.0.0.0:${BILLS_WEB_PORT:-8080}`) in a daemon thread. Pages:
 
 - **Dashboard** — trigger on-demand runs, live status/logs per addon.
-- **Invoices** — table of downloaded PDFs merged with `.manifest.json` metadata,
-  with download links (`/invoices/<addon>/<filename>`).
+- **Invoices** — table from SQLite with mail status; download and Mail/Re-send buttons.
 - **Config** — edit settings persisted to `/config/settings.json`.
-- **Schedules** — edit cron expressions persisted to `/config/schedule.json`.
+- **Schedules** — edit cron expressions persisted to SQLite `schedules` table.
 - **Send mail** — test email and re-send latest invoice per addon.
 
 ## Configuration

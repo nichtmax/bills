@@ -1,6 +1,6 @@
 """Env/file-configurable scheduler.
 
-Re-reads configuration (including ``/config/schedule.json``) on every loop
+Re-reads configuration (including SQLite ``schedules``) on every loop
 iteration, so cron edits made via the web UI take effect within ~30s without a
 container rebuild. Each due addon runs through the shared RunManager (the same
 one the web UI uses), so status and logs are unified.
@@ -54,7 +54,7 @@ def schedule(config: Config | None = None) -> None:
             runner.run(addon, trigger="run-on-start")
 
     while True:
-        cfg = Config()  # re-read settings.json + schedule.json each iteration
+        cfg = Config()  # re-read settings + DB schedules each iteration
         _apply_tz(cfg.tz)
         now = datetime.now()
         upcoming = next_runs(cfg, now)

@@ -1,16 +1,18 @@
-"""Invoice listing: merge on-disk PDFs with per-addon manifest metadata."""
+"""Invoice listing from SQLite."""
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from . import db
 from .addons import REGISTRY
 from .config import Config
 from .core.mailer import Mailer
-from .core.manifest import Manifest
+from .store import InvoiceStore
 
 _FILENAME_RE = re.compile(
     r"^(?P<date>\d{4}-\d{2}-\d{2})\s+(?P<provider>[^/\\]+?)(?:\s+(?P<number>[^\s/\\]+))?\.pdf$",
@@ -20,16 +22,18 @@ _FILENAME_RE = re.compile(
 
 @dataclass
 class InvoiceRow:
+    id: int
     addon: str
     date: str
     provider: str
     number: str
     filename: str
     added: str
-    status: str  # manifest | file-only
+    status: str  # tracked | file-only
     mailed: bool
     mailed_at: str
     mailed_to: str
+    file_exists: bool
 
     def sort_key(self) -> tuple:
         return (self.date, self.addon, self.filename)
@@ -42,76 +46,67 @@ def _parse_filename(name: str) -> tuple[str, str, str]:
     return "", "", ""
 
 
-def _fmt_time(ts: float | None) -> str:
-    if ts is None:
-        return ""
-    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
-
-
 def list_invoices(cfg: Config, addon: str | None = None) -> list[InvoiceRow]:
-    """Return invoice rows for one addon or all known addons."""
-    addons = [addon] if addon else sorted(REGISTRY.keys())
     rows: list[InvoiceRow] = []
+    db_rows = db.list_invoices_db(addon)
+    seen_files: set[tuple[str, str]] = set()
 
+    for r in db_rows:
+        fp = Path(r["file_path"]) if r["file_path"] else Path(cfg.download_root) / r["addon"] / r["filename"]
+        exists = fp.is_file()
+        seen_files.add((r["addon"], r["filename"]))
+        date = r["date"] or _parse_filename(r["filename"])[0] or "—"
+        provider = REGISTRY[r["addon"]].provider if r["addon"] in REGISTRY else r["addon"]
+        number = r["number"] or r["invoice_key"] or "—"
+        mailed, mailed_at, mailed_to = db.mail_status(int(r["id"]))
+        rows.append(
+            InvoiceRow(
+                id=int(r["id"]),
+                addon=r["addon"],
+                date=date,
+                provider=provider,
+                number=str(number),
+                filename=r["filename"],
+                added=r["downloaded_at"] or r["discovered_at"] or "—",
+                status="tracked" if exists else "tracked (missing file)",
+                mailed=mailed,
+                mailed_at=mailed_at,
+                mailed_to=mailed_to,
+                file_exists=exists,
+            )
+        )
+
+    # PDFs on disk not yet in DB
+    addons = [addon] if addon else sorted(REGISTRY.keys())
     for name in addons:
         ddir = Path(cfg.download_root) / name
         if not ddir.is_dir():
             continue
-        manifest = Manifest(ddir / ".manifest.json")
-        manifest_by_file: dict[str, dict] = {}
-        for key, entry in manifest._data.items():  # noqa: SLF001
-            fn = entry.get("filename", "")
-            if fn:
-                manifest_by_file[fn] = {**entry, "_key": key}
-
-        seen_files: set[str] = set()
-        for pdf in sorted(ddir.glob("*.pdf"), key=lambda p: p.name, reverse=True):
-            seen_files.add(pdf.name)
-            m = manifest_by_file.get(pdf.name, {})
+        for pdf in ddir.glob("*.pdf"):
+            if (name, pdf.name) in seen_files:
+                continue
             date, provider, number = _parse_filename(pdf.name)
-            if m.get("date") and not date:
-                date = m["date"]
-            if m.get("number") and not number:
-                number = m["number"]
             if not provider:
                 provider = REGISTRY[name].provider if name in REGISTRY else name
-            added = m.get("added") or _fmt_time(pdf.stat().st_mtime)
-            status = "manifest" if pdf.name in manifest_by_file else "file-only"
-            if not number and m.get("_key"):
-                number = str(m["_key"])
+            mtime = datetime.now().isoformat(timespec="seconds")
+            try:
+                mtime = datetime.fromtimestamp(pdf.stat().st_mtime).isoformat(timespec="seconds")
+            except OSError:
+                pass
             rows.append(
                 InvoiceRow(
-                    name,
-                    date or "—",
-                    provider,
-                    number or "—",
-                    pdf.name,
-                    added,
-                    status,
-                    Manifest.is_mailed(m) if m else False,
-                    Manifest.mailed_at(m) if m else "",
-                    Manifest.mailed_to(m) if m else "",
-                )
-            )
-
-        for fn, m in manifest_by_file.items():
-            if fn in seen_files:
-                continue
-            date = m.get("date") or _parse_filename(fn)[0] or "—"
-            provider = REGISTRY[name].provider if name in REGISTRY else name
-            number = m.get("number") or m.get("_key") or "—"
-            rows.append(
-                InvoiceRow(
-                    name,
-                    date,
-                    provider,
-                    str(number),
-                    fn,
-                    m.get("added", "—"),
-                    "manifest (missing file)",
-                    Manifest.is_mailed(m),
-                    Manifest.mailed_at(m),
-                    Manifest.mailed_to(m),
+                    id=0,
+                    addon=name,
+                    date=date or "—",
+                    provider=provider,
+                    number=number or "—",
+                    filename=pdf.name,
+                    added=mtime,
+                    status="file-only",
+                    mailed=False,
+                    mailed_at="",
+                    mailed_to="",
+                    file_exists=True,
                 )
             )
 
@@ -120,7 +115,13 @@ def list_invoices(cfg: Config, addon: str | None = None) -> list[InvoiceRow]:
 
 
 def resolve_pdf_path(cfg: Config, addon: str, filename: str) -> Path | None:
-    """Safe path resolution for PDF download — no directory traversal."""
+    path = _safe_invoice_path(cfg, addon, filename)
+    if not path or not path.is_file():
+        return None
+    return path
+
+
+def _safe_invoice_path(cfg: Config, addon: str, filename: str) -> Path | None:
     if addon not in REGISTRY:
         return None
     if not filename or "/" in filename or "\\" in filename or ".." in filename:
@@ -133,32 +134,79 @@ def resolve_pdf_path(cfg: Config, addon: str, filename: str) -> Path | None:
         target.relative_to(base)
     except ValueError:
         return None
-    if not target.is_file():
-        return None
     return target
 
 
+def _remove_from_manifest(addon_dir: Path, filename: str) -> bool:
+    manifest_path = addon_dir / ".manifest.json"
+    if not manifest_path.is_file():
+        return False
+    try:
+        data = json.loads(manifest_path.read_text("utf-8")) or {}
+    except (json.JSONDecodeError, OSError):
+        return False
+    keys = [k for k, entry in data.items() if entry.get("filename") == filename]
+    if not keys:
+        return False
+    for key in keys:
+        del data[key]
+    manifest_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), "utf-8")
+    return True
+
+
 def mail_invoice(cfg: Config, addon: str, filename: str) -> tuple[bool, str]:
-    """Send a specific invoice PDF and update manifest mail tracking."""
     path = resolve_pdf_path(cfg, addon, filename)
     if not path:
         return False, "Invoice not found"
 
     provider = REGISTRY[addon].provider
+    store = InvoiceStore(addon, path.parent)
+    subject = f"{provider} invoice: {filename}"
     mailer = Mailer(cfg.mail_for(addon))
     sent = mailer.send_pdf(
         str(path),
-        subject=f"{provider} invoice: {filename}",
+        subject=subject,
         body=f"Attached {provider} invoice: {filename}",
     )
     if not sent:
+        key = store.find_key_by_filename(filename) or filename.replace(".pdf", "")
+        store.mark_mailed(key, mailer.cfg.recipient, subject=subject, success=False, error="SMTP failed")
         return False, "SMTP send failed (check mail settings)"
 
-    manifest = Manifest(path.parent / ".manifest.json")
-    key = manifest.find_key_by_filename(filename)
+    key = store.find_key_by_filename(filename)
     if not key:
         _, _, number = _parse_filename(filename)
         key = number or filename.replace(".pdf", "")
-        manifest.ensure_entry(key, filename)
-    manifest.mark_mailed(key, mailer.cfg.recipient)
+        store.ensure_entry(key, filename)
+    store.mark_mailed(key, mailer.cfg.recipient, subject=subject, success=True)
     return True, f"sent to {mailer.cfg.recipient}"
+
+
+def delete_invoice(cfg: Config, addon: str, filename: str) -> tuple[bool, str]:
+    """Remove PDF, SQLite row (+ mail_events), and legacy manifest entry."""
+    path = _safe_invoice_path(cfg, addon, filename)
+    if not path:
+        return False, "Invalid invoice path"
+
+    removed_file = False
+    if path.is_file():
+        try:
+            path.unlink()
+            removed_file = True
+        except OSError as exc:
+            return False, f"Could not delete file: {exc}"
+
+    db_removed = db.delete_invoice_by_filename(addon, filename)
+    manifest_removed = _remove_from_manifest(path.parent, filename)
+
+    if not removed_file and not db_removed and not manifest_removed:
+        return False, "Invoice not found"
+
+    parts = []
+    if removed_file:
+        parts.append("file")
+    if db_removed:
+        parts.append("database")
+    if manifest_removed:
+        parts.append("manifest")
+    return True, f"deleted ({', '.join(parts)})"

@@ -234,7 +234,7 @@ class VodafoneAddon(Addon):
                     continue
 
                 key = number or (f"{year}-{month}" if year and month else target.name)
-                if self.manifest.has(key):
+                if self.store.has(key):
                     self.log(f"already emailed {key}, keeping file only")
                     result.skipped += 1
                 else:

@@ -1,10 +1,4 @@
-"""Shared background run manager used by both the web UI and the scheduler.
-
-Runs ``python -m bills run <addon>`` in a subprocess, streams its combined
-output into an in-memory ring buffer (and a per-addon log file under
-``/config/logs``), and tracks per-addon status. A per-addon lock prevents the
-same addon from running twice concurrently.
-"""
+"""Shared background run manager used by both the web UI and the scheduler."""
 
 from __future__ import annotations
 
@@ -16,17 +10,19 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
+from . import db
 from .config import config_dir
 
 
 class RunStatus:
     def __init__(self, addon: str) -> None:
         self.addon = addon
-        self.state = "idle"  # idle | running | success | failed
+        self.state = "idle"
         self.started: str | None = None
         self.finished: str | None = None
         self.returncode: int | None = None
         self.trigger: str | None = None
+        self.run_id: int | None = None
         self.lines: deque[str] = deque(maxlen=600)
 
     def to_dict(self) -> dict:
@@ -63,7 +59,6 @@ class RunManager:
         return self._lock(addon).locked()
 
     def run(self, addon: str, *, trigger: str = "manual", pull: bool = True) -> bool:
-        """Run an addon synchronously. Returns False if already running."""
         lock = self._lock(addon)
         if not lock.acquire(blocking=False):
             return False
@@ -75,6 +70,7 @@ class RunManager:
             st.returncode = None
             st.trigger = trigger
             st.lines.clear()
+            st.run_id = db.start_run(addon=addon, trigger=trigger)
 
             app_dir = os.getenv("BILLS_APP_DIR", "/app")
             if pull:
@@ -101,7 +97,14 @@ class RunManager:
             st.returncode = -1
         finally:
             st.finished = datetime.now().isoformat(timespec="seconds")
+            log_text = "\n".join(st.lines)
             self._write_log(addon, st)
+            if st.run_id is not None:
+                db.finish_run(
+                    st.run_id,
+                    exit_code=st.returncode if st.returncode is not None else -1,
+                    log_summary=log_text,
+                )
             lock.release()
         return True
 

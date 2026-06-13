@@ -2,7 +2,8 @@
 
 Resolution order for any setting: ``/config/settings.json`` (written by the web
 UI) -> environment variable -> built-in default. Per-addon cron expressions are
-additionally overridable via ``/config/schedule.json``.
+stored in SQLite (``/config/bills.db`` schedules table); ``schedule.json`` is
+migrated on first boot and no longer written.
 """
 
 from __future__ import annotations
@@ -179,6 +180,11 @@ class Config:
         return [a.strip().lower() for a in raw.split(",") if a.strip()]
 
     def cron(self, addon: str) -> str:
+        from . import db
+
+        db_override = db.get_schedule(addon)
+        if db_override:
+            return db_override
         sched = load_schedule()
         override = (sched.get(addon) or "").strip()
         if override:

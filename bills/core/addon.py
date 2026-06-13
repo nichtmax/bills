@@ -7,9 +7,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..config import Config
+from ..store import InvoiceStore
 from .browser import BrowserSession, launch_context
 from .mailer import Mailer
-from .manifest import Manifest
 
 
 @dataclass
@@ -43,7 +43,7 @@ class Addon:
         self.config = config
         self.download_dir = Path(config.download_root) / self.name
         self.download_dir.mkdir(parents=True, exist_ok=True)
-        self.manifest = Manifest(self.download_dir / ".manifest.json")
+        self.store = InvoiceStore(self.name, self.download_dir)
         self.mailer = Mailer(config.mail_for(self.name))
 
     def make_browser(self) -> BrowserSession:
@@ -62,21 +62,22 @@ class Addon:
         return self.download_dir / self.target_filename(date, number)
 
     def already_known(self, key: str, target: Path) -> bool:
-        return self.manifest.has(key) or target.exists()
+        return self.store.has(key) or target.exists()
 
-    def record(self, key: str, path: Path, extra: dict | None = None) -> None:
-        self.manifest.add(key, path.name, extra)
+    def record(self, key: str, path: Path, extra: dict | None = None) -> int:
+        return self.store.record(key, path, extra)
 
     def email(self, path: Path) -> bool:
+        subject = f"{self.provider} invoice: {path.name}"
         sent = self.mailer.send_pdf(
             str(path),
-            subject=f"{self.provider} invoice: {path.name}",
+            subject=subject,
             body=f"Attached is the latest {self.provider} invoice: {path.name}",
         )
         if sent:
-            key = self.manifest.find_key_by_filename(path.name)
+            key = self.store.find_key_by_filename(path.name)
             if key:
-                self.manifest.mark_mailed(key, self.mailer.cfg.recipient)
+                self.store.mark_mailed(key, self.mailer.cfg.recipient, subject=subject)
         return sent
 
     def log(self, msg: str) -> None:
