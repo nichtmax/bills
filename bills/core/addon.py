@@ -67,12 +67,17 @@ class Addon:
     def record(self, key: str, path: Path, extra: dict | None = None) -> None:
         self.manifest.add(key, path.name, extra)
 
-    def email(self, path: Path) -> None:
-        self.mailer.send_pdf(
+    def email(self, path: Path) -> bool:
+        sent = self.mailer.send_pdf(
             str(path),
             subject=f"{self.provider} invoice: {path.name}",
             body=f"Attached is the latest {self.provider} invoice: {path.name}",
         )
+        if sent:
+            key = self.manifest.find_key_by_filename(path.name)
+            if key:
+                self.manifest.mark_mailed(key, self.mailer.cfg.recipient)
+        return sent
 
     def log(self, msg: str) -> None:
         print(f"[{self.name}] {msg}", flush=True)

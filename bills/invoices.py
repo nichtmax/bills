@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .addons import REGISTRY
 from .config import Config
+from .core.mailer import Mailer
 from .core.manifest import Manifest
 
 _FILENAME_RE = re.compile(
@@ -26,6 +27,9 @@ class InvoiceRow:
     filename: str
     added: str
     status: str  # manifest | file-only
+    mailed: bool
+    mailed_at: str
+    mailed_to: str
 
     def sort_key(self) -> tuple:
         return (self.date, self.addon, self.filename)
@@ -55,7 +59,7 @@ def list_invoices(cfg: Config, addon: str | None = None) -> list[InvoiceRow]:
             continue
         manifest = Manifest(ddir / ".manifest.json")
         manifest_by_file: dict[str, dict] = {}
-        for key, entry in manifest._data.items():  # noqa: SLF001 — read-only merge
+        for key, entry in manifest._data.items():  # noqa: SLF001
             fn = entry.get("filename", "")
             if fn:
                 manifest_by_file[fn] = {**entry, "_key": key}
@@ -76,10 +80,20 @@ def list_invoices(cfg: Config, addon: str | None = None) -> list[InvoiceRow]:
             if not number and m.get("_key"):
                 number = str(m["_key"])
             rows.append(
-                InvoiceRow(name, date or "—", provider, number or "—", pdf.name, added, status)
+                InvoiceRow(
+                    name,
+                    date or "—",
+                    provider,
+                    number or "—",
+                    pdf.name,
+                    added,
+                    status,
+                    Manifest.is_mailed(m) if m else False,
+                    Manifest.mailed_at(m) if m else "",
+                    Manifest.mailed_to(m) if m else "",
+                )
             )
 
-        # manifest entries whose file was removed
         for fn, m in manifest_by_file.items():
             if fn in seen_files:
                 continue
@@ -88,7 +102,16 @@ def list_invoices(cfg: Config, addon: str | None = None) -> list[InvoiceRow]:
             number = m.get("number") or m.get("_key") or "—"
             rows.append(
                 InvoiceRow(
-                    name, date, provider, str(number), fn, m.get("added", "—"), "manifest (missing file)"
+                    name,
+                    date,
+                    provider,
+                    str(number),
+                    fn,
+                    m.get("added", "—"),
+                    "manifest (missing file)",
+                    Manifest.is_mailed(m),
+                    Manifest.mailed_at(m),
+                    Manifest.mailed_to(m),
                 )
             )
 
@@ -113,3 +136,29 @@ def resolve_pdf_path(cfg: Config, addon: str, filename: str) -> Path | None:
     if not target.is_file():
         return None
     return target
+
+
+def mail_invoice(cfg: Config, addon: str, filename: str) -> tuple[bool, str]:
+    """Send a specific invoice PDF and update manifest mail tracking."""
+    path = resolve_pdf_path(cfg, addon, filename)
+    if not path:
+        return False, "Invoice not found"
+
+    provider = REGISTRY[addon].provider
+    mailer = Mailer(cfg.mail_for(addon))
+    sent = mailer.send_pdf(
+        str(path),
+        subject=f"{provider} invoice: {filename}",
+        body=f"Attached {provider} invoice: {filename}",
+    )
+    if not sent:
+        return False, "SMTP send failed (check mail settings)"
+
+    manifest = Manifest(path.parent / ".manifest.json")
+    key = manifest.find_key_by_filename(filename)
+    if not key:
+        _, _, number = _parse_filename(filename)
+        key = number or filename.replace(".pdf", "")
+        manifest.ensure_entry(key, filename)
+    manifest.mark_mailed(key, mailer.cfg.recipient)
+    return True, f"sent to {mailer.cfg.recipient}"

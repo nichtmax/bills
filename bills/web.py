@@ -33,7 +33,7 @@ from .config import (
     save_settings,
 )
 from .core.mailer import Mailer
-from .invoices import list_invoices, resolve_pdf_path
+from .invoices import list_invoices, mail_invoice, resolve_pdf_path
 from .runner import GLOBAL as runner
 
 LAYOUT_TOP = """<!doctype html>
@@ -188,7 +188,7 @@ INVOICES_PAGE = LAYOUT_TOP + """
   <table>
     <tr>
       <th>Addon</th><th>Date</th><th>Provider</th><th>Number</th>
-      <th>Filename</th><th>Added</th><th>Status</th><th></th>
+      <th>Filename</th><th>Added</th><th>Status</th><th>Mailed</th><th></th>
     </tr>
     {% for r in rows %}
     <tr>
@@ -199,9 +199,15 @@ INVOICES_PAGE = LAYOUT_TOP + """
       <td>{{ r.filename }}</td>
       <td class="muted">{{ r.added }}</td>
       <td><span class="badge {% if r.status == 'manifest' %}b-manifest{% elif 'missing' in r.status %}b-missing{% else %}b-file-only{% endif %}">{{ r.status }}</span></td>
-      <td>
+      <td class="muted">
+        {% if r.mailed %}Yes{% if r.mailed_at %}<br><small>{{ r.mailed_at }}</small>{% endif %}{% else %}No{% endif %}
+      </td>
+      <td class="row" style="gap:6px">
         {% if r.status != 'manifest (missing file)' %}
         <a href="{{ url_for('invoice_download', addon=r.addon, filename=r.filename) }}">Download</a>
+        <form method="post" action="{{ url_for('invoice_mail', addon=r.addon, filename=r.filename) }}" style="display:inline">
+          <button class="secondary" type="submit">{{ 'Re-send' if r.mailed else 'Mail' }}</button>
+        </form>
         {% else %}—{% endif %}
       </td>
     </tr>
@@ -398,17 +404,8 @@ def create_app() -> Flask:
         if not pdfs:
             flash(f"No invoices found for {addon}", "err")
             return redirect(url_for("dashboard"))
-        latest = pdfs[0]
-        mailer = Mailer(cfg.mail_for(addon))
-        sent = mailer.send_pdf(
-            str(latest),
-            subject=f"{addon.capitalize()} invoice (re-send): {latest.name}",
-            body=f"Re-sending the latest {addon} invoice: {latest.name}",
-        )
-        flash(
-            f"Re-send {latest.name}: {'sent' if sent else 'failed (check SMTP config)'}",
-            "ok" if sent else "err",
-        )
+        ok, msg = mail_invoice(cfg, addon, pdfs[0].name)
+        flash(f"Re-send {pdfs[0].name}: {msg}", "ok" if ok else "err")
         return redirect(url_for("dashboard"))
 
     @app.route("/invoices")
@@ -429,6 +426,13 @@ def create_app() -> Flask:
             flash("Invoice not found", "err")
             return redirect(url_for("invoices_view"))
         return send_file(path, mimetype="application/pdf", as_attachment=True, download_name=filename)
+
+    @app.route("/invoices/<addon>/<filename>/mail", methods=["POST"])
+    def invoice_mail(addon, filename):
+        cfg = Config()
+        ok, msg = mail_invoice(cfg, addon, filename)
+        flash(f"{filename}: {msg}", "ok" if ok else "err")
+        return redirect(url_for("invoices_view"))
 
     return app
 

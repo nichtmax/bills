@@ -28,11 +28,53 @@ class Manifest:
     def get(self, key: str) -> dict | None:
         return self._data.get(key)
 
+    @staticmethod
+    def is_mailed(entry: dict | None) -> bool:
+        """Legacy entries without ``mailed`` were emailed on download — treat as mailed."""
+        if not entry:
+            return False
+        if "mailed" not in entry:
+            return True
+        return bool(entry.get("mailed"))
+
+    @staticmethod
+    def mailed_at(entry: dict | None) -> str:
+        if not entry:
+            return ""
+        if entry.get("mailed_at"):
+            return str(entry["mailed_at"])
+        if "mailed" not in entry:
+            return str(entry.get("added", ""))
+        return ""
+
+    @staticmethod
+    def mailed_to(entry: dict | None) -> str:
+        if not entry:
+            return ""
+        return str(entry.get("mailed_to", ""))
+
+    def find_key_by_filename(self, filename: str) -> str | None:
+        for key, entry in self._data.items():
+            if entry.get("filename") == filename:
+                return key
+        return None
+
     def add(self, key: str, filename: str, extra: dict | None = None) -> None:
         entry = {"filename": filename, "added": datetime.now().isoformat(timespec="seconds")}
         if extra:
             entry.update(extra)
         self._data[key] = entry
+        self.save()
+
+    def ensure_entry(self, key: str, filename: str) -> None:
+        if key not in self._data:
+            self.add(key, filename)
+
+    def mark_mailed(self, key: str, recipient: str) -> None:
+        entry = self._data.setdefault(key, {})
+        entry["mailed"] = True
+        entry["mailed_at"] = datetime.now().isoformat(timespec="seconds")
+        entry["mailed_to"] = recipient
         self.save()
 
     def save(self) -> None:
