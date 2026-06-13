@@ -57,10 +57,21 @@ LAYOUT_TOP = """<!doctype html>
   label { display: block; font-size: 13px; margin: 10px 0 4px; color: #aab; }
   input[type=text], input[type=password], select { width: 100%; padding: 8px 10px;
           background: #0f1115; border: 1px solid #333a47; border-radius: 6px; color: #e6e6e6; }
-  button { background: #2b6cff; color: #fff; border: 0; padding: 9px 14px; border-radius: 6px;
-           cursor: pointer; font-size: 14px; }
-  button.secondary { background: #38415280; }
-  button.warn { background: #b3541e; }
+  .btn, button { display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+           background: #2b6cff; color: #fff; border: 1px solid transparent; padding: 8px 14px;
+           border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500;
+           text-decoration: none; line-height: 1.2; transition: background .15s, transform .1s, border-color .15s; }
+  .btn:hover, button:hover { filter: brightness(1.08); }
+  .btn:active, button:active { transform: scale(0.97); }
+  .btn .sym, button .sym { font-size: 15px; line-height: 1; opacity: .95; }
+  .btn.secondary, button.secondary { background: #2a3140; border-color: #3d4659; color: #e6e6e6; }
+  .btn.success, button.success { background: #1a5c38; border-color: #267a4d; }
+  .btn.danger, button.danger, button.warn { background: #8b2e2e; border-color: #a33; }
+  .btn.ghost, a.btn.ghost { background: #1a2030; border-color: #3d4659; color: #8ab4f8; }
+  .btn.sm, button.sm { padding: 6px 10px; font-size: 12px; border-radius: 7px; }
+  .btn.icon-only, button.icon-only { padding: 7px 9px; min-width: 34px; }
+  .btn.icon-only .sym, button.icon-only .sym { font-size: 16px; }
+  .btn-group { display: inline-flex; gap: 5px; flex-wrap: wrap; align-items: center; }
   .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 18px; }
   pre { background: #0b0d11; border: 1px solid #262b36; border-radius: 6px; padding: 10px;
@@ -81,11 +92,11 @@ LAYOUT_TOP = """<!doctype html>
 </head>
 <body>
 <nav>
-  <span class="brand">bills</span>
-  <a href="{{ url_for('dashboard') }}">Dashboard</a>
-  <a href="{{ url_for('invoices_view') }}">Invoices</a>
-  <a href="{{ url_for('config_view') }}">Config</a>
-  <a href="{{ url_for('schedule_view') }}">Schedules</a>
+  <span class="brand">📋 bills</span>
+  <a href="{{ url_for('dashboard') }}">⌂ Dashboard</a>
+  <a href="{{ url_for('invoices_view') }}">📄 Invoices</a>
+  <a href="{{ url_for('config_view') }}">⚙ Config</a>
+  <a href="{{ url_for('schedule_view') }}">📅 Schedules</a>
 </nav>
 <div class="container">
   {% with msgs = get_flashed_messages(with_categories=true) %}
@@ -106,14 +117,16 @@ DASHBOARD = LAYOUT_TOP + """
   <h1>Bill automation</h1>
   <p class="muted">Download root: {{ download_root }} &middot; Config: {{ config_dir }} &middot;
      Browser: Playwright Chromium &middot; Enabled: {{ enabled|join(', ') }}</p>
+  <div class="btn-group">
   <form method="post" action="{{ url_for('run', target='all') }}" style="display:inline">
-    <button type="submit">Check all enabled now</button>
+    <button type="submit" title="Run all enabled addons"><span class="sym">⟳</span> Check all</button>
   </form>
   {% for a in enabled %}
   <form method="post" action="{{ url_for('run', target=a) }}" style="display:inline">
-    <button class="secondary" type="submit">Check {{ a }}</button>
+    <button class="secondary sm" type="submit" title="Check {{ a }} for new invoices"><span class="sym">▶</span> {{ a }}</button>
   </form>
   {% endfor %}
+  </div>
 </div>
 
 <div class="card">
@@ -122,12 +135,12 @@ DASHBOARD = LAYOUT_TOP + """
     <select name="addon">
       {% for a in known %}<option value="{{ a }}">{{ a }}</option>{% endfor %}
     </select>
-    <button type="submit">Send test email</button>
+    <button type="submit" title="Send SMTP test message"><span class="sym">✉</span> Test email</button>
   </form>
-  <div class="row" style="margin-top:10px">
+  <div class="btn-group" style="margin-top:10px">
     {% for a in known %}
     <form method="post" action="{{ url_for('mail_resend', addon=a) }}" style="display:inline">
-      <button class="secondary" type="submit">Re-send latest {{ a }} invoice</button>
+      <button class="secondary sm" type="submit" title="Re-send latest {{ a }} invoice"><span class="sym">↻</span> {{ a }}</button>
     </form>
     {% endfor %}
   </div>
@@ -199,19 +212,25 @@ INVOICES_PAGE = LAYOUT_TOP + """
       <td class="muted">{{ r.added }}</td>
       <td><span class="badge {% if r.status == 'tracked' %}b-tracked{% elif 'missing' in r.status %}b-missing{% else %}b-file-only{% endif %}">{{ r.status }}</span></td>
       <td class="muted">
-        {% if r.mailed %}Yes{% if r.mailed_at %}<br><small>{{ r.mailed_at }}</small>{% endif %}{% else %}No{% endif %}
+        {% if r.mailed %}<span title="Emailed">✓</span> Yes{% if r.mailed_at %}<br><small>{{ r.mailed_at }}</small>{% endif %}{% else %}<span title="Not emailed">○</span> No{% endif %}
       </td>
-      <td class="row" style="gap:6px">
+      <td>
+        <div class="btn-group">
         {% if r.file_exists %}
-        <a href="{{ url_for('invoice_download', addon=r.addon, filename=r.filename) }}">Download</a>
+        <a class="btn ghost sm icon-only" href="{{ url_for('invoice_download', addon=r.addon, filename=r.filename) }}"
+           title="Download PDF"><span class="sym">⬇</span></a>
         <form method="post" action="{{ url_for('invoice_mail', addon=r.addon, filename=r.filename) }}" style="display:inline">
-          <button class="secondary" type="submit">{{ 'Re-send' if r.mailed else 'Mail' }}</button>
+          <button class="{% if r.mailed %}secondary{% else %}success{% endif %} sm icon-only" type="submit"
+                  title="{{ 'Re-send email' if r.mailed else 'Send invoice by email' }}">
+            <span class="sym">{% if r.mailed %}↻{% else %}✉{% endif %}</span>
+          </button>
         </form>
-        {% else %}—{% endif %}
+        {% else %}<span class="muted">—</span>{% endif %}
         <form method="post" action="{{ url_for('invoice_delete', addon=r.addon, filename=r.filename) }}" style="display:inline"
               onsubmit="return confirm('Delete {{ r.filename }}? This cannot be undone.');">
-          <button class="warn" type="submit">Delete</button>
+          <button class="danger sm icon-only" type="submit" title="Delete invoice"><span class="sym">🗑</span></button>
         </form>
+        </div>
       </td>
     </tr>
     {% endfor %}
@@ -247,7 +266,7 @@ CONFIG_PAGE = LAYOUT_TOP + """
       {% endfor %}
       </div>
     {% endfor %}
-    <div style="margin-top:18px"><button type="submit">Save configuration</button></div>
+    <div style="margin-top:18px"><button type="submit"><span class="sym">💾</span> Save configuration</button></div>
   </form>
 </div>
 """ + LAYOUT_BOT
@@ -268,7 +287,7 @@ SCHEDULE_PAGE = LAYOUT_TOP + """
       </tr>
       {% endfor %}
     </table>
-    <div style="margin-top:14px"><button type="submit">Save schedules</button></div>
+    <div style="margin-top:14px"><button type="submit"><span class="sym">💾</span> Save schedules</button></div>
   </form>
   <p class="muted" style="margin-top:12px">Examples: <code>0 6 * * 1</code> (Mon 06:00),
      <code>0 6 1 * *</code> (1st 06:00), <code>*/30 * * * *</code> (every 30 min).</p>
