@@ -89,6 +89,8 @@ Key variables:
 - `BILLS_DOWNLOAD_DIR=/downloads`, `BILLS_CONFIG_DIR=/config`
 - `FLARESOLVERR_ENABLED`, `FLARESOLVERR_URL`
 - SMTP: shared `BILLS_SMTP_*` for all addons (same recipient/from/server for every plugin)
+- Mail templates: `BILLS_MAIL_SUBJECT` / `BILLS_MAIL_BODY` with placeholders
+  `{provider}`, `{addon}`, `{filename}`, `{date}`, `{number}`, `{recipient}`
 
 ### Vodafone
 

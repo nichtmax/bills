@@ -58,7 +58,27 @@ SETTINGS_SCHEMA = [
             {"key": "BILLS_EMAIL_FROM", "label": "From address", "type": "text"},
             {"key": "BILLS_EMAIL_PASSWORD", "label": "Password", "type": "secret"},
             {"key": "BILLS_EMAIL_TO", "label": "Recipient", "type": "text"},
+            {
+                "key": "BILLS_MAIL_SUBJECT",
+                "label": "Email subject template",
+                "type": "text",
+                "default": "{provider} invoice: {filename}",
+            },
+            {
+                "key": "BILLS_MAIL_BODY",
+                "label": "Email body template",
+                "type": "textarea",
+                "default": (
+                    "Attached is the latest {provider} invoice: {filename}\n"
+                    "Date: {date}\n"
+                    "Invoice number: {number}"
+                ),
+            },
         ],
+        "note": (
+            "Mail template placeholders: {provider}, {addon}, {filename}, "
+            "{date}, {number}, {recipient}"
+        ),
     },
     {
         "section": "Vodafone",

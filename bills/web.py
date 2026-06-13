@@ -55,8 +55,9 @@ LAYOUT_TOP = """<!doctype html>
           padding: 16px 18px; margin-bottom: 18px; }
   h1 { font-size: 20px; } h2 { font-size: 16px; margin: 0 0 12px; }
   label { display: block; font-size: 13px; margin: 10px 0 4px; color: #aab; }
-  input[type=text], input[type=password], select { width: 100%; padding: 8px 10px;
+  input[type=text], input[type=password], select, textarea { width: 100%; padding: 8px 10px;
           background: #0f1115; border: 1px solid #333a47; border-radius: 6px; color: #e6e6e6; }
+  textarea { min-height: 96px; resize: vertical; font-family: inherit; }
   .btn, button { display: inline-flex; align-items: center; justify-content: center; gap: 6px;
            background: #2b6cff; color: #fff; border: 1px solid transparent; padding: 8px 14px;
            border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500;
@@ -282,9 +283,10 @@ CONFIG_PAGE = LAYOUT_TOP + """
   <form method="post">
     {% for section in schema %}
       <h2 style="margin-top:18px">{{ section.section }}</h2>
+      {% if section.note %}<p class="muted">{{ section.note }}</p>{% endif %}
       <div class="grid2">
       {% for f in section.fields %}
-        <div>
+        <div{% if f.type == 'textarea' %} style="grid-column: 1 / -1"{% endif %}>
           <label for="{{ f.key }}">{{ f.label }}
             {% if f.type == 'secret' %}<span class="muted">({{ 'set' if values[f.key] else 'unset' }})</span>{% endif %}
           </label>
@@ -292,6 +294,8 @@ CONFIG_PAGE = LAYOUT_TOP + """
             <input type="checkbox" name="{{ f.key }}" id="{{ f.key }}" {{ 'checked' if values[f.key] else '' }}>
           {% elif f.type == 'secret' %}
             <input type="password" name="{{ f.key }}" id="{{ f.key }}" placeholder="(unchanged)" autocomplete="new-password">
+          {% elif f.type == 'textarea' %}
+            <textarea name="{{ f.key }}" id="{{ f.key }}" rows="5">{{ values[f.key] }}</textarea>
           {% else %}
             <input type="text" name="{{ f.key }}" id="{{ f.key }}" value="{{ values[f.key] }}">
           {% endif %}
@@ -388,6 +392,12 @@ def create_app() -> Flask:
                         val = request.form.get(key, "")
                         if val.strip():
                             settings[key] = val
+                    elif ftype == "textarea":
+                        val = request.form.get(key, "")
+                        if val.strip():
+                            settings[key] = val
+                        else:
+                            settings.pop(key, None)
                     else:
                         val = request.form.get(key, "").strip()
                         if val:
@@ -407,7 +417,9 @@ def create_app() -> Flask:
                 elif ftype == "secret":
                     values[key] = cfg.is_set(key)
                 else:
-                    values[key] = cfg.get(key)
+                    raw = cfg.get(key)
+                    default = f.get("default", "")
+                    values[key] = raw if raw else default
         return render_template_string(
             CONFIG_PAGE, schema=SETTINGS_SCHEMA, values=values, config_dir=cfg.config_dir
         )

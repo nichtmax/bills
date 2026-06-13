@@ -9,6 +9,7 @@ from pathlib import Path
 from ..config import Config
 from ..store import InvoiceStore
 from .browser import BrowserSession, launch_context
+from .mail_template import invoice_mail_message
 from .mailer import Mailer
 
 
@@ -73,12 +74,13 @@ class Addon:
         return self.store.record(key, path, extra)
 
     def email(self, path: Path) -> bool:
-        subject = f"{self.provider} invoice: {path.name}"
-        sent = self.mailer.send_pdf(
-            str(path),
-            subject=subject,
-            body=f"Attached is the latest {self.provider} invoice: {path.name}",
+        subject, body = invoice_mail_message(
+            self.config,
+            addon=self.name,
+            provider=self.provider,
+            filename=path.name,
         )
+        sent = self.mailer.send_pdf(str(path), subject=subject, body=body)
         if sent:
             key = self.store.find_key_by_filename(path.name)
             if key:

@@ -11,6 +11,7 @@ from . import db
 from .addons import REGISTRY
 from .config import Config
 from .core.mailer import Mailer
+from .core.mail_template import invoice_mail_message
 from .store import InvoiceStore
 
 _FILENAME_RE = re.compile(
@@ -121,13 +122,11 @@ def mail_invoice(cfg: Config, addon: str, filename: str) -> tuple[bool, str]:
 
     provider = REGISTRY[addon].provider
     store = InvoiceStore(addon, path.parent)
-    subject = f"{provider} invoice: {filename}"
-    mailer = Mailer(cfg.mail_for(addon))
-    sent = mailer.send_pdf(
-        str(path),
-        subject=subject,
-        body=f"Attached {provider} invoice: {filename}",
+    subject, body = invoice_mail_message(
+        cfg, addon=addon, provider=provider, filename=filename
     )
+    mailer = Mailer(cfg.mail_for(addon))
+    sent = mailer.send_pdf(str(path), subject=subject, body=body)
     if not sent:
         key = store.find_key_by_filename(filename) or filename.replace(".pdf", "")
         store.mark_mailed(
