@@ -199,16 +199,12 @@ INVOICES_PAGE = LAYOUT_TOP + """
   {% if rows %}
   <table>
     <tr>
-      <th>Addon</th><th>Date</th><th>Provider</th><th>Number</th>
-      <th>Filename</th><th>Added</th><th>Status</th><th>Mailed</th><th></th>
+      <th>Addon</th><th>Date</th><th>Added</th><th>Status</th><th>Mailed</th><th></th>
     </tr>
     {% for r in rows %}
     <tr>
       <td>{{ r.addon }}</td>
       <td>{{ r.date }}</td>
-      <td>{{ r.provider }}</td>
-      <td>{{ r.number }}</td>
-      <td>{{ r.filename }}</td>
       <td class="muted">{{ r.added }}</td>
       <td><span class="badge {% if r.status == 'tracked' %}b-tracked{% elif 'missing' in r.status %}b-missing{% else %}b-file-only{% endif %}">{{ r.status }}</span></td>
       <td class="muted">
