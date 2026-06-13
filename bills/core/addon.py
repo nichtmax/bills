@@ -62,7 +62,12 @@ class Addon:
         return self.download_dir / self.target_filename(date, number)
 
     def already_known(self, key: str, target: Path) -> bool:
-        return self.store.has(key) or target.exists()
+        if target.is_file():
+            return True
+        row = self.store.get(key)
+        if row and row.get("file_path"):
+            return Path(row["file_path"]).is_file()
+        return False
 
     def record(self, key: str, path: Path, extra: dict | None = None) -> int:
         return self.store.record(key, path, extra)

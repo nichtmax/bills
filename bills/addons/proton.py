@@ -5,8 +5,9 @@ Invoices page: https://account.protonvpn.com/subscription#invoices
 Authentication: username + password via Playwright (preferred when set), or
 exported session cookies (same approach as Cursor). With a valid session the
 addon lists invoices through ``GET /api/payments/v5/invoices`` and downloads
-each PDF from ``GET /api/payments/v5/invoices/{id}``. Falls back to clicking
-Download in the web UI if the API is unavailable.
+each PDF from ``GET /api/payments/v5/invoices/{id}`` (falling back to v4 for
+legacy invoices). Falls back to clicking Download in the web UI if the API is
+unavailable.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from ..core.addon import Addon, RunResult
 from ..core.browser import USER_AGENT, inject_cookies
 
-INVOICES_PAGE = "https://account.protonvpn.com/subscription#invoices"
+INVOICES_PAGE = "https://account.proton.me/u/0/vpn/subscription#invoices"
 LOGIN_URL = "https://account.proton.me/login"
 API_BASE = "https://account.proton.me/api"
 INVOICE_OWNER_USER = 0
@@ -486,53 +487,88 @@ class ProtonAddon(Addon):
         return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     def _download_pdf_api(self, invoice_id: str) -> tuple[bytes | None, int | None]:
-        url = f"{API_BASE}/payments/v5/invoices/{invoice_id}"
-        try:
-            resp = self.browser.context.request.get(
-                url, headers=self._api_headers(), timeout=120000
-            )
-        except Exception as exc:  # noqa: BLE001
-            self.log(f"PDF API error for {invoice_id}: {exc}")
-            return None, None
-        if not resp.ok:
-            self.log(f"PDF API HTTP {resp.status} for {invoice_id}")
-            return None, resp.status
-        body = resp.body()
-        if body.startswith(b"%PDF"):
-            return body, resp.status
-        self.log(f"PDF API returned non-PDF for {invoice_id}")
-        return None, resp.status
+        """Fetch invoice PDF via payments API (v5 first, v4 for legacy invoices)."""
+        last_status: int | None = None
+        for version in ("v5", "v4"):
+            url = f"{API_BASE}/payments/{version}/invoices/{invoice_id}"
+            try:
+                resp = self.browser.context.request.get(
+                    url, headers=self._api_headers(), timeout=120000
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.log(f"PDF API error for {invoice_id} ({version}): {exc}")
+                continue
+            last_status = resp.status
+            if not resp.ok:
+                if resp.status == 404:
+                    continue
+                self.log(f"PDF API HTTP {resp.status} for {invoice_id} ({version})")
+                return None, resp.status
+            body = resp.body()
+            if body.startswith(b"%PDF"):
+                if version != "v5":
+                    self.log(f"PDF fetched via payments/{version} for {invoice_id}")
+                return body, resp.status
+            self.log(f"PDF API returned non-PDF for {invoice_id} ({version})")
+        if last_status == 404:
+            self.log(f"PDF API HTTP 404 for {invoice_id} on v5/v4")
+        return None, last_status
+
+    def _save_captured_pdf(self, invoice_id: str, pdf_bytes: bytes) -> Path | None:
+        tmp = self.download_dir / f".incoming-{invoice_id}.pdf"
+        tmp.write_bytes(pdf_bytes)
+        return tmp if tmp.is_file() else None
 
     def _download_pdf_ui(self, invoice_id: str) -> Path | None:
-        """Last-resort: trigger browser download from the invoices page."""
+        """Last-resort: open row actions on the invoices page and capture the PDF."""
         self.page.goto(INVOICES_PAGE, wait_until="domcontentloaded")
         time.sleep(3)
+        captured_pdf: list[bytes] = []
+
+        def on_response(response) -> None:
+            if f"/invoices/{invoice_id}" not in response.url:
+                return
+            try:
+                if response.ok:
+                    body = response.body()
+                    if body.startswith(b"%PDF"):
+                        captured_pdf.append(body)
+            except Exception:
+                pass
+
+        self.page.on("response", on_response)
         try:
-            row = self.page.locator(f"text={invoice_id}").first
-            row.scroll_into_view_if_needed()
-            # Open action menu then Download (Proton UI pattern).
-            menu = row.locator("xpath=ancestor::tr//button").last
+            row = self.page.locator(f"tr:has-text('ID{invoice_id}')").first
+            if row.count() == 0:
+                row = self.page.locator(f"text=ID{invoice_id}").first
+            row.scroll_into_view_if_needed(timeout=15000)
+            menu = row.locator("button").last
             if menu.count() == 0:
-                menu = self.page.locator("button:has-text('Download')").first
+                self.log(f"UI download: no action menu for {invoice_id}")
+                return None
             with self.page.expect_download(timeout=90000) as dl_info:
-                if menu.count():
-                    menu.click()
-                    time.sleep(0.5)
-                    dl = self.page.locator("text=Download").first
-                    if dl.count():
-                        dl.click()
-                else:
-                    return None
+                menu.click()
+                time.sleep(0.5)
+                dl_btn = self.page.locator(
+                    "[role='menuitem']:has-text('Download'), button:has-text('Download')"
+                ).first
+                dl_btn.click(timeout=10000)
             download = dl_info.value
             tmp = self.download_dir / f".incoming-{invoice_id}.pdf"
             download.save_as(str(tmp))
             return tmp if tmp.is_file() else None
         except PlaywrightTimeout:
+            if captured_pdf:
+                return self._save_captured_pdf(invoice_id, captured_pdf[0])
             self.log(f"UI download timeout for {invoice_id}")
             return None
         except Exception as exc:  # noqa: BLE001
+            if captured_pdf:
+                return self._save_captured_pdf(invoice_id, captured_pdf[0])
             self.log(f"UI download failed for {invoice_id}: {exc}")
             return None
+        finally:
+            self.page.remove_listener("response", on_response)
 
     def _process_invoice(self, inv: dict, result: RunResult) -> None:
         invoice_id = str(inv.get("ID") or "").strip()
@@ -547,15 +583,11 @@ class ProtonAddon(Addon):
             result.skipped += 1
             return
 
-        pdf_bytes, status = self._download_pdf_api(invoice_id)
-        if status == 404:
-            self.log(f"PDF not available for {invoice_id}, skipping")
-            self.store.ensure_entry(invoice_id, target.name)
-            result.skipped += 1
-            return
+        pdf_bytes, _status = self._download_pdf_api(invoice_id)
         if pdf_bytes:
             target.write_bytes(pdf_bytes)
         else:
+            self.log(f"API download failed for {invoice_id}, trying UI")
             tmp = self._download_pdf_ui(invoice_id)
             if not tmp:
                 result.failed += 1
