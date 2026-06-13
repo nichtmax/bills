@@ -1,10 +1,4 @@
-"""Cursor invoice downloader via the Stripe billing portal.
-
-Ported from the standalone ``cursor`` repo. Auth uses exported session cookies
-(optionally a FlareSolverr preflight); invoices are fetched over HTTP through
-Stripe's ``invoicedata.stripe.com`` endpoint -> signed S3 URL, then saved as
-``YYYY-MM-DD Cursor <number>.pdf``. ``CURSOR_STRIPE_PORTAL_URL`` skips login.
-"""
+"""Cursor invoice downloader via the Stripe billing portal (Playwright)."""
 
 from __future__ import annotations
 
@@ -16,10 +10,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-from selenium.common.exceptions import TimeoutException
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
+from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 from ..core.addon import Addon, RunResult
 from ..core.browser import inject_cookies
@@ -51,17 +42,18 @@ class CursorAddon(Addon):
         email = os.getenv("CURSOR_EMAIL")
         password = os.getenv("CURSOR_PASSWORD") or None
 
-        self.driver = self.make_driver()
-        self.wait = WebDriverWait(self.driver, 45)
+        self.browser = self.make_browser()
+        self.page = self.browser.page
+        self.context = self.browser.context
         self.fs: FlareSolverrClient | None = None
         try:
             portal_url = os.getenv("CURSOR_STRIPE_PORTAL_URL", "").strip()
             if portal_url:
                 self.log("using CURSOR_STRIPE_PORTAL_URL; skipping login")
-                self.driver.get(portal_url)
+                self.page.goto(portal_url, wait_until="domcontentloaded")
                 time.sleep(5)
-                if "stripe.com" not in self.driver.current_url.lower():
-                    self.log(f"portal URL did not reach Stripe: {self.driver.current_url}")
+                if "stripe.com" not in self.page.url.lower():
+                    self.log(f"portal URL did not reach Stripe: {self.page.url}")
                     result.failed = 1
                     return result
             else:
@@ -83,13 +75,9 @@ class CursorAddon(Addon):
 
             self._download_invoices(result)
         finally:
-            try:
-                self.driver.quit()
-            except Exception:
-                pass
+            self.browser.close()
         return result
 
-    # -- auth -------------------------------------------------------------
     def _cookies_file(self) -> Path:
         custom = os.getenv("CURSOR_SESSION_COOKIES_FILE", "").strip()
         if custom:
@@ -124,9 +112,9 @@ class CursorAddon(Addon):
         if not cookies:
             return False
         self.log(f"trying session cookies ({len(cookies)} exported)")
-        added = inject_cookies(self.driver, cookies, log=self.log)
+        added = inject_cookies(self.context, cookies, log=self.log)
         self.log(f"injected {added} cookies")
-        self.driver.get(BILLING_URL)
+        self.page.goto(BILLING_URL, wait_until="domcontentloaded")
         time.sleep(3)
         if self._on_dashboard():
             self.log("session cookies valid - skipping password login")
@@ -154,29 +142,28 @@ class CursorAddon(Addon):
             return
         try:
             solution = self.fs.get(url)
-            self.fs.apply_to_driver(self.driver, solution, log=self.log)
+            self.fs.apply_to_context(self.context, solution, log=self.log)
             time.sleep(2)
         except RuntimeError as exc:
             self.log(f"FlareSolverr preflight failed: {exc}")
 
     def _captcha_error(self) -> str:
         return (
-            "Cursor CAPTCHA blocked login. Headless Selenium cannot solve Cloudflare "
-            "Turnstile. Log in once in a normal browser, export session cookies, and set "
-            "CURSOR_SESSION_COOKIES or place them at the cookies file (see README). "
-            "Optionally enable FlareSolverr (FLARESOLVERR_ENABLED=true)."
+            "Cursor CAPTCHA blocked login. Headless Playwright cannot solve Cloudflare "
+            "Turnstile. Log in once in a normal browser, export session cookies, and place "
+            "them at the cookies file (see README). Optionally enable FlareSolverr."
         )
 
     def _check_human_challenge(self, step: str) -> bool:
-        if not human_challenge_visible(self.driver.page_source):
+        if not human_challenge_visible(self.page.content()):
             return False
         self.log(f"human verification blocked login at {step}")
         if self.fs:
             try:
-                solution = self.fs.get(self.driver.current_url)
-                self.fs.apply_to_driver(self.driver, solution, log=self.log)
+                solution = self.fs.get(self.page.url)
+                self.fs.apply_to_context(self.context, solution, log=self.log)
                 time.sleep(2)
-                if not human_challenge_visible(self.driver.page_source):
+                if not human_challenge_visible(self.page.content()):
                     self.log("FlareSolverr cleared challenge")
                     return False
             except RuntimeError as exc:
@@ -193,34 +180,30 @@ class CursorAddon(Addon):
             if self._on_dashboard():
                 self.log("already logged in")
                 return True
-            if "authenticator.cursor" not in self.driver.current_url.lower():
+            if "authenticator.cursor" not in self.page.url.lower():
                 self._flaresolverr_preflight(LOGIN_URL)
             try:
-                email_input = self.wait.until(
-                    EC.presence_of_element_located(
-                        (By.CSS_SELECTOR, "input[type='email'], input[name='email'], input[name='username']")
-                    )
-                )
-                email_input.clear()
-                email_input.send_keys(email)
+                email_input = self.page.locator(
+                    "input[type='email'], input[name='email'], input[name='username']"
+                ).first
+                email_input.wait_for(state="visible", timeout=45000)
+                email_input.fill(email)
                 self._click_continue()
                 time.sleep(3)
                 if self._check_human_challenge("after-email"):
                     return False
                 if password:
                     try:
-                        password_input = self.wait.until(
-                            EC.presence_of_element_located(
-                                (By.CSS_SELECTOR, "input[type='password'], input[name='password']")
-                            )
-                        )
-                        password_input.clear()
-                        password_input.send_keys(password)
+                        password_input = self.page.locator(
+                            "input[type='password'], input[name='password']"
+                        ).first
+                        password_input.wait_for(state="visible", timeout=45000)
+                        password_input.fill(password)
                         self._click_continue()
                         time.sleep(3)
                         if self._check_human_challenge("after-password"):
                             return False
-                    except TimeoutException:
+                    except PlaywrightTimeout:
                         self.log("no password field; waiting for magic-link/SSO")
                 else:
                     self.log("no CURSOR_PASSWORD; waiting for magic-link/SSO")
@@ -233,12 +216,12 @@ class CursorAddon(Addon):
                     if self._check_human_challenge("waiting-for-dashboard"):
                         return False
                     time.sleep(2)
-                if human_challenge_visible(self.driver.page_source):
+                if human_challenge_visible(self.page.content()):
                     self._check_human_challenge("timeout")
                     return False
                 self.log("login timed out waiting for dashboard redirect")
                 return False
-            except TimeoutException as exc:
+            except PlaywrightTimeout as exc:
                 self.log(f"login form not found: {exc}")
                 return False
         finally:
@@ -247,21 +230,23 @@ class CursorAddon(Addon):
     def _click_continue(self) -> None:
         for selector in ("button[type='submit']", "input[type='submit']"):
             try:
-                self.driver.find_element(By.CSS_SELECTOR, selector).click()
+                self.page.locator(selector).first.click(timeout=3000)
                 return
             except Exception:
                 continue
-        for btn in self.driver.find_elements(By.TAG_NAME, "button"):
-            if (btn.text or "").strip().lower() in {"continue", "sign in", "log in", "next"}:
+        for btn in self.page.locator("button").all():
+            if (btn.text_content() or "").strip().lower() in {
+                "continue", "sign in", "log in", "next",
+            }:
                 btn.click()
                 return
 
     def _on_dashboard(self) -> bool:
-        url = self.driver.current_url.lower()
+        url = self.page.url.lower()
         return "cursor.com/dashboard" in url and "login" not in url and "auth" not in url
 
     def _open_billing(self) -> bool:
-        self.driver.get(BILLING_URL)
+        self.page.goto(BILLING_URL, wait_until="domcontentloaded")
         time.sleep(3)
         if not self._on_dashboard():
             self.log("billing dashboard unreachable")
@@ -270,14 +255,29 @@ class CursorAddon(Addon):
         return True
 
     def _open_stripe_portal(self) -> bool:
-        handles_before = set(self.driver.window_handles)
         lower = "translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')"
         clicked = False
-        for needle in ("manage in stripe", "manage subscription", "manage billing", "billing portal", "stripe"):
-            xpath = f"//*[self::a or self::button][contains({lower}, '{needle}')]"
+        for needle in (
+            "manage in stripe", "manage subscription", "manage billing",
+            "billing portal", "stripe",
+        ):
+            xpath = f"xpath=//*[self::a or self::button][contains({lower}, '{needle}')]"
             try:
-                el = self.driver.find_element(By.XPATH, xpath)
-                self.driver.execute_script("arguments[0].click();", el)
+                loc = self.page.locator(xpath)
+                if loc.count() == 0:
+                    continue
+                el = loc.first
+                if not el.is_visible():
+                    continue
+                try:
+                    with self.context.expect_page(timeout=15000) as page_info:
+                        el.click()
+                    portal_page = page_info.value
+                    portal_page.wait_for_load_state("domcontentloaded")
+                    self.page = portal_page
+                except PlaywrightTimeout:
+                    el.click()
+                    time.sleep(5)
                 clicked = True
                 self.log(f"clicked portal control matching '{needle}'")
                 break
@@ -286,21 +286,16 @@ class CursorAddon(Addon):
         if not clicked:
             self.log("Stripe portal button not found")
             return False
-        time.sleep(5)
-        new_handles = set(self.driver.window_handles) - handles_before
-        if new_handles:
-            self.driver.switch_to.window(new_handles.pop())
         time.sleep(2)
-        self.log(f"Stripe portal URL: {self.driver.current_url}")
-        return "stripe.com" in self.driver.current_url.lower()
+        self.log(f"Stripe portal URL: {self.page.url}")
+        return "stripe.com" in self.page.url.lower()
 
-    # -- invoice download (HTTP) ------------------------------------------
     def _portal_invoice_links(self) -> list[tuple[str, str]]:
         links: list[tuple[str, str]] = []
         seen: set[str] = set()
-        for el in self.driver.find_elements(By.CSS_SELECTOR, "a[href*='invoice.stripe.com/i/']"):
+        for el in self.page.locator("a[href*='invoice.stripe.com/i/']").all():
             href = el.get_attribute("href") or ""
-            label = (el.text or "").strip()
+            label = (el.text_content() or "").strip()
             if href and href not in seen:
                 seen.add(href)
                 links.append((href, label))

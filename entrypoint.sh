@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 # Runs inside the TrueNAS bills app container after the repo is cloned to /app.
-# Pulls the latest code, installs deps, then starts the requested command
-# (defaults to the scheduler).
 set -e
 
 APP_DIR="${BILLS_APP_DIR:-/app}"
@@ -14,6 +12,14 @@ fi
 
 echo "[entrypoint] installing requirements..."
 pip install --no-cache-dir -r requirements.txt
+
+echo "[entrypoint] ensuring Playwright Chromium..."
+if [ ! -d "${PLAYWRIGHT_BROWSERS_PATH:-/root/.cache/ms-playwright}" ] || \
+   ! ls "${PLAYWRIGHT_BROWSERS_PATH:-/root/.cache/ms-playwright}"/chromium-* >/dev/null 2>&1; then
+  playwright install --with-deps chromium
+else
+  echo "[entrypoint] Playwright Chromium already present"
+fi
 
 echo "[entrypoint] starting: python -m bills ${*:-schedule}"
 exec python -m bills "${@:-schedule}"

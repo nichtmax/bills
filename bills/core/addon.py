@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..config import Config
-from .browser import create_driver
+from .browser import BrowserSession, launch_context
 from .mailer import Mailer
 from .manifest import Manifest
 
@@ -38,8 +38,6 @@ class Addon:
 
     name: str = "addon"
     provider: str = "Addon"
-    #: pull managed downloads back from the Selenium Grid
-    needs_grid_downloads: bool = False
 
     def __init__(self, config: Config) -> None:
         self.config = config
@@ -48,12 +46,10 @@ class Addon:
         self.manifest = Manifest(self.download_dir / ".manifest.json")
         self.mailer = Mailer(config.mail_for(self.name))
 
-    # -- helpers shared by addons -----------------------------------------
-    def make_driver(self):
-        return create_driver(
+    def make_browser(self) -> BrowserSession:
+        return launch_context(
             download_path=str(self.download_dir),
             headless=self.config.headless(self.name),
-            enable_downloads=self.needs_grid_downloads,
         )
 
     def target_filename(self, date: str | None, number: str | None) -> str:
@@ -66,7 +62,6 @@ class Addon:
         return self.download_dir / self.target_filename(date, number)
 
     def already_known(self, key: str, target: Path) -> bool:
-        """Skip-if-exists: known in manifest OR the file is already on disk."""
         return self.manifest.has(key) or target.exists()
 
     def record(self, key: str, path: Path, extra: dict | None = None) -> None:
@@ -82,6 +77,5 @@ class Addon:
     def log(self, msg: str) -> None:
         print(f"[{self.name}] {msg}", flush=True)
 
-    # -- to implement -----------------------------------------------------
-    def run(self) -> RunResult:  # pragma: no cover - interface
+    def run(self) -> RunResult:  # pragma: no cover
         raise NotImplementedError

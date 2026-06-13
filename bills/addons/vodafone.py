@@ -1,10 +1,4 @@
-"""Vodafone invoice downloader (Angular MeinVodafone portal).
-
-Ported from the standalone ``vodafone`` repo. Login + navigation logic is
-preserved; downloads now use the shared Selenium Grid's managed-download API
-so finished PDFs are pulled back into ``/downloads/vodafone``, then parsed for
-date + invoice number and renamed to ``YYYY-MM-DD Vodafone <number>.pdf``.
-"""
+"""Vodafone invoice downloader (Angular MeinVodafone portal) via Playwright."""
 
 from __future__ import annotations
 
@@ -15,11 +9,7 @@ from pathlib import Path
 
 import pdfplumber
 import PyPDF2
-from selenium.common.exceptions import TimeoutException
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
+from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 from ..core.addon import Addon, RunResult
 
@@ -42,10 +32,6 @@ MONTHS = {
 class VodafoneAddon(Addon):
     name = "vodafone"
     provider = "Vodafone"
-    # Downloads land in the shared host dataset mounted into both this
-    # container and the Selenium Grid at the same path (/downloads/vodafone),
-    # so the browser's download appears here directly.
-    needs_grid_downloads = False
 
     def run(self) -> RunResult:
         result = RunResult()
@@ -56,8 +42,10 @@ class VodafoneAddon(Addon):
             result.failed = 1
             return result
 
-        self.driver = self.make_driver()
-        self.wait = WebDriverWait(self.driver, 30)
+        self.browser = self.make_browser()
+        self.page = self.browser.page
+        self.incoming = self.download_dir / ".incoming"
+        self.incoming.mkdir(parents=True, exist_ok=True)
         try:
             if not self._navigate_to_login():
                 self.log("could not load login page")
@@ -73,24 +61,22 @@ class VodafoneAddon(Addon):
                 return result
             self._download_invoices(result)
         finally:
-            try:
-                self.driver.quit()
-            except Exception:
-                pass
+            self.browser.close()
         return result
 
-    # -- login / navigation (preserved) -----------------------------------
     def _navigate_to_login(self) -> bool:
         try:
             self.log("loading Vodafone login page...")
-            self.driver.get("https://www.vodafone.de/meinvodafone/account/login")
+            self.page.goto(
+                "https://www.vodafone.de/meinvodafone/account/login",
+                wait_until="domcontentloaded",
+            )
             try:
-                btn = WebDriverWait(self.driver, 5).until(
-                    EC.element_to_be_clickable((By.ID, "dip-consent-summary-accept-all"))
-                )
+                btn = self.page.locator("#dip-consent-summary-accept-all")
+                btn.wait_for(state="visible", timeout=5000)
                 btn.click()
                 time.sleep(2)
-            except Exception:
+            except PlaywrightTimeout:
                 pass
             return self._wait_for_angular()
         except Exception as exc:  # noqa: BLE001
@@ -99,15 +85,11 @@ class VodafoneAddon(Addon):
 
     def _wait_for_angular(self) -> bool:
         try:
-            self.wait.until(EC.presence_of_element_located((By.TAG_NAME, "app-root")))
+            self.page.wait_for_selector("app-root", timeout=30000)
             try:
-                WebDriverWait(self.driver, 15).until(
-                    EC.presence_of_element_located((By.CLASS_NAME, "spinner"))
-                )
-                WebDriverWait(self.driver, 30).until(
-                    EC.invisibility_of_element_located((By.CLASS_NAME, "spinner"))
-                )
-            except TimeoutException:
+                self.page.wait_for_selector(".spinner", timeout=15000)
+                self.page.wait_for_selector(".spinner", state="hidden", timeout=30000)
+            except PlaywrightTimeout:
                 pass
             time.sleep(5)
             return True
@@ -123,8 +105,8 @@ class VodafoneAddon(Addon):
             "app-root input[type='email']",
             "input[type='text']:not([style*='display: none'])",
         ):
-            for field in self.driver.find_elements(By.CSS_SELECTOR, selector):
-                if field.is_displayed() and field.is_enabled():
+            for field in self.page.locator(selector).all():
+                if field.is_visible() and field.is_enabled():
                     username_field = field
                     break
             if username_field:
@@ -134,8 +116,8 @@ class VodafoneAddon(Addon):
             "app-root input[type='password']",
             "input[type='password']:not([style*='display: none'])",
         ):
-            for field in self.driver.find_elements(By.CSS_SELECTOR, selector):
-                if field.is_displayed() and field.is_enabled():
+            for field in self.page.locator(selector).all():
+                if field.is_visible() and field.is_enabled():
                     password_field = field
                     break
             if password_field:
@@ -145,16 +127,13 @@ class VodafoneAddon(Addon):
     def _find_login_button(self):
         for selector in (
             "app-root button[type='submit']",
-            "//app-root//button[contains(text(), 'Login') or contains(text(), 'Anmelden')]",
-            "//button[contains(text(), 'Login') or contains(text(), 'Anmelden')]",
+            "xpath=//app-root//button[contains(text(), 'Login') or contains(text(), 'Anmelden')]",
+            "xpath=//button[contains(text(), 'Login') or contains(text(), 'Anmelden')]",
         ):
             try:
-                if selector.startswith("//"):
-                    buttons = self.driver.find_elements(By.XPATH, selector)
-                else:
-                    buttons = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                for button in buttons:
-                    if button.is_displayed() and button.is_enabled():
+                loc = self.page.locator(selector)
+                for button in loc.all():
+                    if button.is_visible() and button.is_enabled():
                         return button
             except Exception:
                 continue
@@ -166,17 +145,15 @@ class VodafoneAddon(Addon):
             if not username_field or not password_field:
                 self.log("login fields not found")
                 return False
-            username_field.clear()
-            username_field.send_keys(username)
+            username_field.fill(username)
             time.sleep(1)
-            password_field.clear()
-            password_field.send_keys(password)
+            password_field.fill(password)
             time.sleep(1)
             button = self._find_login_button()
             if button:
-                self.driver.execute_script("arguments[0].click();", button)
+                button.click()
             else:
-                password_field.send_keys(Keys.RETURN)
+                password_field.press("Enter")
             return self._wait_for_login_success()
         except Exception as exc:  # noqa: BLE001
             self.log(f"login error: {exc}")
@@ -184,8 +161,8 @@ class VodafoneAddon(Addon):
 
     def _wait_for_login_success(self) -> bool:
         for _ in range(15):
-            url = self.driver.current_url
-            src = self.driver.page_source.lower()
+            url = self.page.url
+            src = self.page.content().lower()
             if (
                 "/meinvodafone/services" in url
                 or "dashboard" in url
@@ -202,27 +179,21 @@ class VodafoneAddon(Addon):
         try:
             time.sleep(5)
             selectors = [
-                "//a[.//div[contains(text(), 'Meine Rechnungen')]]",
-                "//a[contains(.//div, 'Rechnungen')]",
-                "//a[.//use[contains(@xlink:href, 'billing-lrg')]]",
+                "xpath=//a[.//div[contains(text(), 'Meine Rechnungen')]]",
+                "xpath=//a[contains(.//div, 'Rechnungen')]",
+                "xpath=//a[.//use[contains(@xlink:href, 'billing-lrg')]]",
                 "a.btn.btn-alt.eqHeight",
-                "//a[contains(text(), 'Rechnung')]",
+                "xpath=//a[contains(text(), 'Rechnung')]",
             ]
             for selector in selectors:
-                if selector.startswith("//"):
-                    elements = self.driver.find_elements(By.XPATH, selector)
-                else:
-                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                for element in elements:
-                    if not element.is_displayed():
+                for element in self.page.locator(selector).all():
+                    if not element.is_visible():
                         continue
-                    text = (element.get_attribute("textContent") or "").lower()
+                    text = (element.text_content() or "").lower()
                     if any(k in text for k in ("meine rechnungen", "rechnungen", "herunterladen")):
-                        self.driver.execute_script(
-                            "arguments[0].scrollIntoView({block: 'center'});", element
-                        )
+                        element.scroll_into_view_if_needed()
                         time.sleep(2)
-                        self.driver.execute_script("arguments[0].click();", element)
+                        element.click()
                         time.sleep(5)
                         return True
             self.log("'Meine Rechnungen' not found")
@@ -231,7 +202,6 @@ class VodafoneAddon(Addon):
             self.log(f"navigation error: {exc}")
             return False
 
-    # -- download (shared host dir between app + Grid) --------------------
     def _download_invoices(self, result: RunResult) -> None:
         time.sleep(5)
         buttons = self._find_invoice_buttons()
@@ -248,16 +218,12 @@ class VodafoneAddon(Addon):
                     result.skipped += 1
                     continue
 
-                before = self._current_pdfs()
-                self.driver.execute_script(
-                    "arguments[0].scrollIntoView({block: 'center'});", info["element"]
-                )
+                button = info["element"]
+                button.scroll_into_view_if_needed()
                 time.sleep(2)
-                self.driver.execute_script("arguments[0].click();", info["element"])
-
-                local = self._wait_for_new_download(before, timeout=60)
+                local = self._download_via_playwright(button)
                 if not local:
-                    self.log(f"download {i + 1}: timeout, no file")
+                    self.log(f"download {i + 1}: timeout or failed")
                     result.failed += 1
                     continue
 
@@ -282,29 +248,42 @@ class VodafoneAddon(Addon):
                 self.log(f"error on download {i + 1}: {exc}")
                 result.failed += 1
 
+    def _download_via_playwright(self, button) -> Path | None:
+        try:
+            with self.page.expect_download(timeout=60000) as dl_info:
+                button.click()
+            download = dl_info.value
+            suggested = download.suggested_filename or "invoice.pdf"
+            local = self.incoming / suggested
+            download.save_as(local)
+            if local.exists() and local.stat().st_size > 0:
+                return local
+        except PlaywrightTimeout:
+            return None
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"download error: {exc}")
+        return None
+
     def _find_invoice_buttons(self) -> list[dict]:
         selectors = [
             'button.ws10-button-link[aria-label*="Rechnung"][aria-label*="PDF"][aria-disabled="false"]',
             'button.ws10-button-link.ws10-button-link--color-monochrome-600[aria-disabled="false"]',
-            '//button[@class="ws10-button-link ws10-button-link--color-monochrome-600" and contains(@aria-label, "Rechnung") and contains(@aria-label, "PDF")]',
+            'xpath=//button[@class="ws10-button-link ws10-button-link--color-monochrome-600" and contains(@aria-label, "Rechnung") and contains(@aria-label, "PDF")]',
             "button.ws10-button-link",
         ]
         found: list[dict] = []
         for selector in selectors:
             try:
-                if selector.startswith("//"):
-                    buttons = self.driver.find_elements(By.XPATH, selector)
-                else:
-                    buttons = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                buttons = self.page.locator(selector).all()
             except Exception:
                 continue
             for button in buttons:
                 try:
-                    if not button.is_displayed() or not button.is_enabled():
+                    if not button.is_visible() or not button.is_enabled():
                         continue
                     aria = button.get_attribute("aria-label") or ""
                     disabled = button.get_attribute("aria-disabled") or ""
-                    text = button.get_attribute("textContent") or ""
+                    text = button.text_content() or ""
                     is_invoice = (
                         ("rechnung" in aria.lower() and "pdf" in aria.lower())
                         or ("rechnung (pdf)" in text.lower())
@@ -321,45 +300,6 @@ class VodafoneAddon(Addon):
                 break
         return found
 
-    def _current_pdfs(self) -> dict[str, float]:
-        out: dict[str, float] = {}
-        for f in self.download_dir.glob("*.pdf"):
-            try:
-                out[f.name] = f.stat().st_mtime
-            except OSError:
-                continue
-        return out
-
-    def _file_complete(self, path: Path, checks: int = 3) -> bool:
-        last = -1
-        for i in range(checks):
-            try:
-                size = path.stat().st_size
-            except OSError:
-                return False
-            if size == 0:
-                return False
-            if size == last and i > 0:
-                return True
-            last = size
-            time.sleep(1)
-        return True
-
-    def _wait_for_new_download(self, before: dict[str, float], timeout: int = 60):
-        start = time.time()
-        while time.time() - start < timeout:
-            for name, mtime in self._current_pdfs().items():
-                if name not in before or mtime > before.get(name, 0):
-                    path = self.download_dir / name
-                    if self._file_complete(path):
-                        return path
-            # account for chrome's partial download files
-            if not any(self.download_dir.glob("*.crdownload")):
-                time.sleep(1)
-            else:
-                time.sleep(1)
-        return None
-
     def _finalize(self, local: Path, pdf_date, number, year, month) -> Path | None:
         if pdf_date:
             date_part = pdf_date
@@ -371,9 +311,7 @@ class VodafoneAddon(Addon):
         target = self.target_path(date_part, number)
         counter = 1
         while target.exists():
-            target = self.download_dir / (
-                f"{target.stem} ({counter}).pdf"
-            )
+            target = self.download_dir / f"{target.stem} ({counter}).pdf"
             counter += 1
         try:
             local.replace(target)
@@ -384,12 +322,8 @@ class VodafoneAddon(Addon):
 
     def _month_already_present(self, year: str, month: str) -> bool:
         prefix = f"{year}-{month}-"
-        for f in self.download_dir.glob("*.pdf"):
-            if f.name.startswith(prefix):
-                return True
-        return False
+        return any(f.name.startswith(prefix) for f in self.download_dir.glob("*.pdf"))
 
-    # -- PDF parsing (preserved) ------------------------------------------
     def _extract_invoice_data(self, pdf_path: Path):
         try:
             date, number = self._extract_with_pdfplumber(pdf_path)
@@ -437,11 +371,7 @@ class VodafoneAddon(Addon):
             r"[Dd]atum:?\s*(\d{1,2})\.\s*(\w+)\s*(\d{4})",
             r"(\d{1,2})\.\s*(\w+)\s*(\d{4})",
             r"[Rr]echnungsdatum:?\s*(\d{1,2})\.\s*(\w+)\s*(\d{4})",
-            r"[Aa]usstellungsdatum:?\s*(\d{1,2})\.\s*(\w+)\s*(\d{4})",
             r"(\d{1,2})\.(\d{1,2})\.(\d{4})",
-            r"(\d{1,2})/(\d{1,2})/(\d{4})",
-            r"(\d{1,2})-(\d{1,2})-(\d{4})",
-            r"[Dd]atum:?\s*(\d{1,2})\.(\d{1,2})\.(\d{4})",
         ]
         for pattern in patterns:
             for match in re.findall(pattern, text, re.IGNORECASE):
@@ -466,11 +396,7 @@ class VodafoneAddon(Addon):
         patterns = [
             r"[Rr]echnungsnummer:?\s*([A-Za-z0-9\-_]+)",
             r"[Rr]echnung\s+[Nn]r\.?:?\s*([A-Za-z0-9\-_]+)",
-            r"[Ii]nvoice\s+[Nn]umber:?\s*([A-Za-z0-9\-_]+)",
-            r"[Bb]elegnummer:?\s*([A-Za-z0-9\-_]+)",
-            r"[Rr]echnung-?[Nn]r\.?:?\s*([A-Za-z0-9\-_]+)",
             r"[Nn]r\.?:?\s*([A-Za-z0-9\-_]{6,})",
-            r"[Nn]ummer:?\s*([A-Za-z0-9\-_]{6,})",
             r"(\d{8,})",
         ]
         for pattern in patterns:

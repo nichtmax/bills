@@ -33,18 +33,9 @@ SECRET_KEYS = {
 # Schema that drives the web config form. Each field maps 1:1 to a settings key.
 SETTINGS_SCHEMA = [
     {
-        "section": "General",
+        "section": "Browser / FlareSolverr",
         "fields": [
-            {"key": "BILLS_ADDONS", "label": "Enabled addons (comma-separated)", "type": "text"},
-            {"key": "BILLS_TZ", "label": "Timezone", "type": "text"},
-            {"key": "BILLS_RUN_ON_START", "label": "Run all addons on start", "type": "bool"},
-            {"key": "BILLS_HEADLESS", "label": "Headless browser", "type": "bool"},
-        ],
-    },
-    {
-        "section": "Selenium / FlareSolverr",
-        "fields": [
-            {"key": "SELENIUM_REMOTE_URL", "label": "Selenium remote URL", "type": "text"},
+            {"key": "BILLS_HEADLESS", "label": "Headless browser (Playwright Chromium)", "type": "bool"},
             {"key": "FLARESOLVERR_ENABLED", "label": "FlareSolverr enabled", "type": "bool"},
             {"key": "FLARESOLVERR_URL", "label": "FlareSolverr URL", "type": "text"},
         ],
@@ -155,7 +146,6 @@ class Config:
         self.tz = self.get("BILLS_TZ", "Europe/Berlin")
         self.run_on_start = self.get_bool("BILLS_RUN_ON_START", False)
         self.app_dir = self.get("BILLS_APP_DIR", "/app")
-        self.selenium_remote_url = self.get("SELENIUM_REMOTE_URL")
         self.flaresolverr_enabled = self.get_bool("FLARESOLVERR_ENABLED", False)
         self.flaresolverr_url = self.get("FLARESOLVERR_URL", "http://flaresolverr:8191")
         self.web_port = int(self.get("BILLS_WEB_PORT", "8080") or "8080")

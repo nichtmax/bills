@@ -1,18 +1,16 @@
-"""Remote Selenium WebDriver against the shared bills-selenium Grid.
+"""In-process Playwright Chromium for bill addons.
 
-Browsers run inside the Grid container, so files the browser downloads land
-on the Grid, not on this container. We enable Selenium 4 managed downloads
-(``se:downloadsEnabled``) so addons can pull finished files back into
-``/downloads`` via ``get_downloadable_files`` / ``download_file``.
+Each addon run launches its own browser inside the bills container. Downloads
+are captured via Playwright's download API and saved directly under
+``/downloads/<addon>``.
 """
 
 from __future__ import annotations
 
-import os
-import sys
+from dataclasses import dataclass
+from pathlib import Path
 
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
+from playwright.sync_api import Browser, BrowserContext, Page, Playwright, sync_playwright
 
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -20,74 +18,64 @@ USER_AGENT = (
 )
 
 
-def remote_url() -> str:
-    url = os.getenv("SELENIUM_REMOTE_URL", "").strip()
-    if not url:
-        print(
-            "ERROR: SELENIUM_REMOTE_URL is required (shared bills-selenium grid).",
-            file=sys.stderr,
-            flush=True,
-        )
-        sys.exit(1)
-    return url
+@dataclass
+class BrowserSession:
+    """Owns a Playwright browser lifecycle for one addon run."""
+
+    playwright: Playwright
+    browser: Browser
+    context: BrowserContext
+    page: Page
+
+    def close(self) -> None:
+        for obj in (self.context, self.browser):
+            try:
+                obj.close()
+            except Exception:
+                pass
+        try:
+            self.playwright.stop()
+        except Exception:
+            pass
 
 
-def create_driver(
-    *,
-    download_path: str,
-    headless: bool = True,
-    enable_downloads: bool = False,
-) -> webdriver.Remote:
-    """Create a remote Chrome session on the shared Grid."""
-    opts = Options()
-    prefs = {
-        "download.default_directory": download_path,
-        "download.prompt_for_download": False,
-        "download.directory_upgrade": True,
-        "plugins.always_open_pdf_externally": True,
-        "safebrowsing.enabled": True,
-    }
-    opts.add_experimental_option("prefs", prefs)
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    opts.add_argument("--disable-blink-features=AutomationControlled")
-    opts.add_experimental_option("excludeSwitches", ["enable-automation"])
-    opts.add_experimental_option("useAutomationExtension", False)
-    opts.add_argument(f"--user-agent={USER_AGENT}")
-    if headless:
-        opts.add_argument("--headless=new")
-    if enable_downloads:
-        opts.set_capability("se:downloadsEnabled", True)
-
-    print(
-        f"Connecting to remote Selenium: {remote_url().split('@')[-1]}",
-        flush=True,
+def launch_context(*, download_path: str, headless: bool = True) -> BrowserSession:
+    """Launch Chromium in-process with downloads enabled."""
+    Path(download_path).mkdir(parents=True, exist_ok=True)
+    pw = sync_playwright().start()
+    browser = pw.chromium.launch(
+        headless=headless,
+        args=[
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-blink-features=AutomationControlled",
+        ],
     )
-    driver = webdriver.Remote(command_executor=remote_url(), options=opts)
-    try:
-        driver.set_window_size(1440, 960)
-    except Exception:
-        pass
-    try:
-        driver.execute_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-        )
-    except Exception:
-        pass
-    return driver
+    context = browser.new_context(
+        user_agent=USER_AGENT,
+        accept_downloads=True,
+        viewport={"width": 1440, "height": 960},
+    )
+    page = context.new_page()
+    print(f"Playwright Chromium launched (headless={headless})", flush=True)
+    return BrowserSession(pw, browser, context, page)
 
 
 def normalize_cookie(cookie: dict) -> dict | None:
-    """Normalise a browser-exported cookie into Selenium's add_cookie format."""
+    """Normalise a browser-exported cookie for Playwright ``add_cookies``."""
     name = cookie.get("name") or cookie.get("Name")
     value = cookie.get("value") or cookie.get("Value")
     if not name or value is None:
         return None
-    out: dict = {"name": name, "value": value}
     domain = cookie.get("domain") or cookie.get("Domain")
-    if domain:
-        out["domain"] = domain
-    out["path"] = cookie.get("path") or cookie.get("Path") or "/"
+    if not domain:
+        return None
+    out: dict = {
+        "name": name,
+        "value": value,
+        "domain": domain,
+        "path": cookie.get("path") or cookie.get("Path") or "/",
+    }
     if cookie.get("secure") is not None:
         out["secure"] = bool(cookie.get("secure"))
     if cookie.get("httpOnly") is not None:
@@ -95,39 +83,27 @@ def normalize_cookie(cookie: dict) -> dict | None:
     expiry = cookie.get("expiry") or cookie.get("expires") or cookie.get("expirationDate")
     if expiry:
         try:
-            out["expiry"] = int(float(expiry))
+            out["expires"] = int(float(expiry))
         except (TypeError, ValueError):
             pass
     return out
 
 
-def inject_cookies(driver: webdriver.Remote, cookies: list[dict], log=print) -> int:
-    """Inject exported cookies, visiting each domain first as Selenium requires.
-
-    add_cookie only accepts cookies whose domain matches the currently loaded
-    page, so we group cookies by host and navigate to ``https://<host>/`` before
-    adding that host's cookies (with the ``domain`` key stripped)."""
+def inject_cookies(context: BrowserContext, cookies: list[dict], log=print) -> int:
+    """Inject exported cookies grouped by domain (Playwright requires domain)."""
     by_domain: dict[str, list[dict]] = {}
     for raw in cookies:
         norm = normalize_cookie(raw)
         if not norm:
             continue
-        host = (norm.get("domain") or "").lstrip(".")
+        host = norm["domain"].lstrip(".")
         by_domain.setdefault(host, []).append(norm)
 
     added = 0
     for host, domain_cookies in by_domain.items():
-        if host:
-            try:
-                driver.get(f"https://{host}/")
-            except Exception as exc:  # noqa: BLE001
-                log(f"  could not open https://{host}/: {exc}")
-                continue
-        for cookie in domain_cookies:
-            payload = {k: v for k, v in cookie.items() if k != "domain"}
-            try:
-                driver.add_cookie(payload)
-                added += 1
-            except Exception as exc:  # noqa: BLE001
-                log(f"  cookie '{cookie.get('name')}' @ {host or 'current'} skipped: {exc}")
+        try:
+            context.add_cookies(domain_cookies)
+            added += len(domain_cookies)
+        except Exception as exc:  # noqa: BLE001
+            log(f"  cookies for {host} skipped: {exc}")
     return added

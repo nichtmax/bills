@@ -71,11 +71,11 @@ class FlareSolverrClient:
         result = self._post(payload)
         return result.get("solution", {})
 
-    def apply_to_driver(self, driver, solution: dict, log=print) -> int:
-        """Push FlareSolverr cookies (and UA) onto a Selenium driver."""
+    def apply_to_context(self, context, solution: dict, log=print) -> int:
+        """Push FlareSolverr cookies onto a Playwright browser context."""
         from .browser import inject_cookies
 
         cookies = solution.get("cookies", []) or []
-        added = inject_cookies(driver, cookies, log=log)
+        added = inject_cookies(context, cookies, log=log)
         log(f"  FlareSolverr supplied {added} cookies")
         return added

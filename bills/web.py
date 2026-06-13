@@ -106,7 +106,7 @@ DASHBOARD = LAYOUT_TOP + """
 <div class="card">
   <h1>Bill automation</h1>
   <p class="muted">Download root: {{ download_root }} &middot; Config: {{ config_dir }} &middot;
-     Selenium: {{ selenium }} &middot; Enabled: {{ enabled|join(', ') }}</p>
+     Browser: Playwright Chromium &middot; Enabled: {{ enabled|join(', ') }}</p>
   <form method="post" action="{{ url_for('run', target='all') }}" style="display:inline">
     <button type="submit">Check all enabled now</button>
   </form>
@@ -284,7 +284,6 @@ def create_app() -> Flask:
             known=_known_addons(cfg),
             download_root=cfg.download_root,
             config_dir=cfg.config_dir,
-            selenium=cfg.selenium_remote_url or "(unset)",
         )
 
     @app.route("/api/runs")

@@ -2,7 +2,8 @@
 
 Unified bill downloader for multiple providers. Each provider is a small
 **addon**; a built-in, env-configurable scheduler runs them on their own cron.
-Designed to run as a single TrueNAS custom app against a shared Selenium Grid.
+Playwright Chromium runs **in-process** inside the bills container (no external
+Selenium Grid).
 
 ## Addons
 
@@ -19,13 +20,15 @@ invoices (tracked in a per-addon `.manifest.json`).
 
 ```
 bills/
-  entrypoint.sh             # clone/pull + pip + run (used by the container)
+  entrypoint.sh             # clone/pull + pip + playwright install + run
   requirements.txt
   bills/
     __main__.py             # CLI: schedule | run <addon> | list
-    config.py               # env parsing
-    scheduler.py            # croniter loop (runs each addon in a subprocess)
-    core/                   # browser, flaresolverr, mailer, manifest, addon base
+    config.py               # env + settings.json parsing
+    scheduler.py            # croniter loop
+    web.py                  # Flask web UI
+    invoices.py             # invoice list helper
+    core/                   # browser (Playwright), flaresolverr, mailer, manifest
     addons/                 # vodafone.py, cursor.py
 ```
 
@@ -42,81 +45,51 @@ python -m bills list              # list registered addons
 ## Web UI
 
 `python -m bills schedule` also starts a small Flask UI (bound to
-`0.0.0.0:${BILLS_WEB_PORT:-8080}`) in a daemon thread, sharing the same config
-and run manager as the scheduler. It provides:
+`0.0.0.0:${BILLS_WEB_PORT:-8080}`) in a daemon thread. Pages:
 
-- **Dashboard** — trigger on-demand runs (`vodafone` / `cursor` / all enabled)
-  in the background, with a live status badge and streaming log per addon
-  (polled from `/api/runs`).
-- **Config** — view the effective configuration and edit user-writable settings.
-  Saving writes `/config/settings.json`, which `config.py` prefers over env vars
-  (resolution: `settings.json` → env → default), so edits survive restarts.
-  Secrets are write-only (shown as set/unset, never echoed).
-- **Send mail** — send a test email per addon (verifies SMTP), plus a
-  "re-send latest invoice" action per addon.
-- **Schedules** — edit per-addon cron expressions (validated with `croniter`),
-  saved to `/config/schedule.json`. The scheduler re-reads this every loop
-  (~30s), so changes take effect without a rebuild.
-
-Persisted config files live on the `/config` dataset:
-`settings.json`, `schedule.json`, and `logs/<addon>-last.log`.
+- **Dashboard** — trigger on-demand runs, live status/logs per addon.
+- **Invoices** — table of downloaded PDFs merged with `.manifest.json` metadata,
+  with download links (`/invoices/<addon>/<filename>`).
+- **Config** — edit settings persisted to `/config/settings.json`.
+- **Schedules** — edit cron expressions persisted to `/config/schedule.json`.
+- **Send mail** — test email and re-send latest invoice per addon.
 
 ## Configuration
 
-All settings come from environment variables. See [`.env.example`](.env.example).
+Resolution order: `/config/settings.json` → environment → default.
 
 Key variables:
 
-- `BILLS_ADDONS=vodafone,cursor` — enabled addons.
-- `BILLS_VODAFONE_CRON`, `BILLS_CURSOR_CRON` — per-addon schedule (cron).
-- `BILLS_RUN_ON_START`, `BILLS_TZ`.
-- `SELENIUM_REMOTE_URL` — shared `bills-selenium` Grid (required).
-- `BILLS_DOWNLOAD_DIR=/downloads`, `BILLS_CONFIG_DIR=/config`.
-- SMTP: `BILLS_SMTP_SERVER` / `BILLS_EMAIL_FROM` / `BILLS_EMAIL_PASSWORD` /
-  `BILLS_EMAIL_TO` (per-addon `VODAFONE_*` / `CURSOR_*` override these).
+- `BILLS_ADDONS`, `BILLS_*_CRON`, `BILLS_RUN_ON_START`, `BILLS_TZ`
+- `BILLS_HEADLESS=true` — headless Playwright Chromium
+- `BILLS_DOWNLOAD_DIR=/downloads`, `BILLS_CONFIG_DIR=/config`
+- `FLARESOLVERR_ENABLED`, `FLARESOLVERR_URL`
+- SMTP: shared `BILLS_SMTP_*` or per-addon overrides
 
 ### Vodafone
 
-Set `VODAFONE_USERNAME` and `VODAFONE_PASSWORT`. The browser runs on the shared
-Grid; finished PDFs are pulled back via Selenium's managed-download API, so the
-Grid must have managed downloads enabled (`SE_ENABLE_MANAGED_DOWNLOADS=true`).
+Set `VODAFONE_USERNAME` and `VODAFONE_PASSWORT`. Playwright logs in, navigates
+to Meine Rechnungen, and downloads PDFs via `page.expect_download()`.
 
 ### Cursor
 
-Cursor login is protected by Cloudflare Turnstile, which headless Selenium
-cannot solve. Authenticate with session cookies instead:
+Cursor login is protected by Cloudflare Turnstile. Use session cookies:
 
 1. Log in to Cursor in a normal browser.
-2. Export the `cursor.com` cookies as a JSON array.
-3. Provide them via either:
-   - `CURSOR_SESSION_COOKIES` (the JSON array inline), or
-   - a file at `/config/cursor-session-cookies.json`
-     (override with `CURSOR_SESSION_COOKIES_FILE`).
+2. Export cookies as JSON.
+3. Place at `/config/cursor-session-cookies.json`.
 
-Alternatively set `CURSOR_STRIPE_PORTAL_URL` to a fresh Stripe billing-portal
-session URL to skip Cursor login entirely. FlareSolverr can be enabled with
-`FLARESOLVERR_ENABLED=true` + `FLARESOLVERR_URL`.
+Alternatively set `CURSOR_STRIPE_PORTAL_URL` to skip login. FlareSolverr optional.
 
 ## Deployment (TrueNAS)
 
-A single custom app with two services on one compose:
+Single custom app — one service (`bills`) on `python:3.12-slim`:
 
-- `bills` — `python:3.12-slim`. Its command runs a small bootstrap script that
-  clones this **public** repo into `/app` (no token needed) and runs
-  `entrypoint.sh` (pip install + scheduler):
+- Bootstrap script clones this **public** repo into `/app`.
+- `entrypoint.sh` pip-installs deps and runs `playwright install --with-deps chromium`
+  (cached after first boot).
+- Mounts: `/zfs/bills -> /downloads`, `/zfs/bills/config -> /config`.
+- Port: host `8512` → container `8080` (web UI).
+- Network: `ix-bills-net` (FlareSolverr if enabled).
 
-  ```sh
-  if [ -d /app/.git ]; then cd /app && git pull --ff-only || true; \
-  else apt-get update -qq && apt-get install -y -qq git >/dev/null; \
-       git clone "https://${BILLS_REPO}" /app; fi
-  exec bash /app/entrypoint.sh schedule
-  ```
-
-- `bills-selenium` — `selenium/standalone-chromium:latest` (hostname
-  `bills-selenium`, `shm_size: 2gb`, `SE_ENABLE_MANAGED_DOWNLOADS=true`),
-  mounting `/zfs/bills -> /downloads` so the browser writes invoices to the
-  same dataset the `bills` service reads.
-
-Mounts (`bills`): `/zfs/bills -> /downloads`, `/zfs/bills/config -> /config`.
-Network: `ix-bills-net`. `bills` `depends_on` `bills-selenium` and reaches it at
-`http://bills-selenium:4444/wd/hub`.
+No external Selenium Grid required.
