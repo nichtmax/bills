@@ -76,18 +76,24 @@ session URL to skip Cursor login entirely. FlareSolverr can be enabled with
 
 ## Deployment (TrueNAS)
 
-A single custom app on `python:3.12-slim`. The container command installs git,
-clones this repo into `/app` using `GITHUB_TOKEN`, then runs `entrypoint.sh`:
+A single custom app with two services on one compose:
 
-```sh
-sh -c '
-  set -e
-  apt-get update -qq && apt-get install -y -qq git >/dev/null
+- `bills` — `python:3.12-slim`. Its command runs a small bootstrap script that
+  clones this **public** repo into `/app` (no token needed) and runs
+  `entrypoint.sh` (pip install + scheduler):
+
+  ```sh
   if [ -d /app/.git ]; then cd /app && git pull --ff-only || true; \
-  else git clone "https://${GITHUB_TOKEN}@${BILLS_REPO}" /app; fi
+  else apt-get update -qq && apt-get install -y -qq git >/dev/null; \
+       git clone "https://${BILLS_REPO}" /app; fi
   exec bash /app/entrypoint.sh schedule
-'
-```
+  ```
 
-Mounts: `/zfs/bills -> /downloads`, `/zfs/bills/config -> /config`.
-Network: `ix-bills-net` (to reach `bills-selenium:4444` and FlareSolverr).
+- `bills-selenium` — `selenium/standalone-chromium:latest` (hostname
+  `bills-selenium`, `shm_size: 2gb`, `SE_ENABLE_MANAGED_DOWNLOADS=true`),
+  mounting `/zfs/bills -> /downloads` so the browser writes invoices to the
+  same dataset the `bills` service reads.
+
+Mounts (`bills`): `/zfs/bills -> /downloads`, `/zfs/bills/config -> /config`.
+Network: `ix-bills-net`. `bills` `depends_on` `bills-selenium` and reaches it at
+`http://bills-selenium:4444/wd/hub`.
