@@ -11,7 +11,7 @@ Selenium Grid).
 |------------|-----------------------|-----------------------------------|----------------------|
 | `vodafone` | MeinVodafone (Angular)| username + password               | `/downloads/vodafone`|
 | `cursor`   | Stripe billing portal | session cookies (+ optional FlareSolverr) | `/downloads/cursor`  |
-| `proton`   | Proton VPN subscription | session cookies (Proton payments API) | `/downloads/proton`  |
+| `proton`   | Proton VPN subscription | username + password (session cookies fallback) | `/downloads/proton`  |
 
 Invoices are saved as `YYYY-MM-DD <Provider> <number>.pdf`. Files are never
 re-downloaded if they already exist, and an email is only sent for **new**
@@ -108,13 +108,15 @@ Alternatively set `CURSOR_STRIPE_PORTAL_URL` to skip login. FlareSolverr optiona
 ### Proton VPN
 
 Invoices live at [account.protonvpn.com/subscription#invoices](https://account.protonvpn.com/subscription#invoices).
-Headless login is unreliable — use session cookies:
+
+Set `PROTON_USERNAME` and `PROTON_PASSWORT`. Playwright logs in at account.proton.me,
+then lists invoices via Proton's payments API and downloads PDFs directly.
+
+If login fails (e.g. 2FA), export session cookies as a fallback:
 
 1. Log in at account.proton.me or account.protonvpn.com in a normal browser.
 2. Export cookies for `.proton.me` / `.protonvpn.com` as JSON.
 3. Place at `/config/proton-session-cookies.json`.
-
-The addon lists invoices via Proton's payments API and downloads PDFs directly.
 
 ## Deployment (TrueNAS)
 

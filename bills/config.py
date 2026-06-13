@@ -28,6 +28,7 @@ SECRET_KEYS = {
     "BILLS_EMAIL_PASSWORD",
     "VODAFONE_PASSWORT",
     "CURSOR_PASSWORD",
+    "PROTON_PASSWORT",
 }
 
 # Legacy per-addon SMTP keys (migrated to BILLS_*; still read as fallback from env).
@@ -77,9 +78,11 @@ SETTINGS_SCHEMA = [
     {
         "section": "Proton VPN",
         "fields": [
+            {"key": "PROTON_USERNAME", "label": "Username / email", "type": "text"},
+            {"key": "PROTON_PASSWORT", "label": "Password", "type": "secret"},
             {
                 "key": "PROTON_SESSION_COOKIES_FILE",
-                "label": "Session cookies file",
+                "label": "Session cookies file (fallback)",
                 "type": "text",
             },
         ],

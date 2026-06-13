@@ -2,10 +2,11 @@
 
 Invoices page: https://account.protonvpn.com/subscription#invoices
 
-Authentication uses exported session cookies (same approach as Cursor). With valid
-cookies the addon lists invoices through ``GET /api/payments/v5/invoices`` and
-downloads each PDF from ``GET /api/payments/v5/invoices/{id}``. Falls back to
-clicking Download in the web UI if the API is unavailable.
+Authentication: username + password via Playwright (preferred when set), or
+exported session cookies (same approach as Cursor). With a valid session the
+addon lists invoices through ``GET /api/payments/v5/invoices`` and downloads
+each PDF from ``GET /api/payments/v5/invoices/{id}``. Falls back to clicking
+Download in the web UI if the API is unavailable.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from ..core.addon import Addon, RunResult
 from ..core.browser import inject_cookies
 
 INVOICES_PAGE = "https://account.protonvpn.com/subscription#invoices"
+LOGIN_URL = "https://account.proton.me/login"
 API_BASE = "https://account.proton.me/api"
 INVOICE_OWNER_USER = 0
 
@@ -37,18 +39,37 @@ class ProtonAddon(Addon):
 
     def run(self) -> RunResult:
         result = RunResult()
-        try:
-            cookies = self._load_session_cookies()
-        except AuthenticationError as exc:
-            self.log(f"ERROR: {exc}")
-            result.failed = 1
-            return result
+        username = self.config.get("PROTON_USERNAME")
+        password = self.config.get("PROTON_PASSWORT")
 
         self.browser = self.make_browser()
         self.page = self.browser.page
         try:
-            self.log(f"injecting {len(cookies)} session cookies")
-            inject_cookies(self.browser.context, cookies, log=self.log)
+            authenticated = False
+            if username and password:
+                self.log("trying username/password login")
+                if self._login(username, password):
+                    authenticated = True
+                elif self._try_session_auth():
+                    self.log("login failed; session cookies worked as fallback")
+                    authenticated = True
+                else:
+                    self.log("login failed and no valid session cookies")
+                    result.failed = 1
+                    return result
+            elif self._try_session_auth():
+                authenticated = True
+            else:
+                self.log(
+                    "ERROR: set PROTON_USERNAME / PROTON_PASSWORT or export session "
+                    "cookies (PROTON_SESSION_COOKIES / PROTON_SESSION_COOKIES_FILE)"
+                )
+                result.failed = 1
+                return result
+
+            if not authenticated:
+                result.failed = 1
+                return result
 
             invoices = self._list_invoices_api()
             if invoices is None:
@@ -66,13 +87,13 @@ class ProtonAddon(Addon):
         return result
 
     def _cookies_file(self) -> Path:
-        custom = os.getenv("PROTON_SESSION_COOKIES_FILE", "").strip()
+        custom = self.config.get("PROTON_SESSION_COOKIES_FILE")
         if custom:
             return Path(custom)
         return Path(self.config.config_dir) / "proton-session-cookies.json"
 
-    def _load_session_cookies(self) -> list[dict]:
-        raw = os.getenv("PROTON_SESSION_COOKIES", "").strip()
+    def _load_session_cookies(self) -> list[dict] | None:
+        raw = self.config.get("PROTON_SESSION_COOKIES")
         source = "PROTON_SESSION_COOKIES"
         if not raw:
             path = self._cookies_file()
@@ -80,11 +101,7 @@ class ProtonAddon(Addon):
                 raw = path.read_text(encoding="utf-8").strip()
                 source = str(path)
         if not raw:
-            raise AuthenticationError(
-                "session cookies required — export from a logged-in browser and set "
-                "PROTON_SESSION_COOKIES or place JSON at "
-                f"{self._cookies_file()}"
-            )
+            return None
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as exc:
@@ -92,6 +109,114 @@ class ProtonAddon(Addon):
         if not isinstance(data, list):
             raise AuthenticationError(f"{source} must be a JSON array of cookies")
         return data
+
+    def _try_session_auth(self) -> bool:
+        try:
+            cookies = self._load_session_cookies()
+        except AuthenticationError as exc:
+            self.log(f"session cookies invalid: {exc}")
+            return False
+        if not cookies:
+            return False
+        self.log(f"trying session cookies ({len(cookies)} exported)")
+        inject_cookies(self.browser.context, cookies, log=self.log)
+        return self._session_reaches_invoices()
+
+    def _session_reaches_invoices(self) -> bool:
+        self.page.goto(INVOICES_PAGE, wait_until="domcontentloaded")
+        time.sleep(3)
+        url = self.page.url.lower()
+        if "login" in url and "subscription" not in url:
+            self.log("session cookies did not reach subscription page")
+            return False
+        self.log("session cookies valid")
+        return True
+
+    def _login(self, username: str, password: str) -> bool:
+        try:
+            self.log(f"opening Proton login for {username[:3]}***")
+            self.page.goto(LOGIN_URL, wait_until="domcontentloaded")
+            time.sleep(2)
+
+            username_input = self.page.locator(
+                "input#username, input[name='username'], input[type='email']"
+            ).first
+            username_input.wait_for(state="visible", timeout=45000)
+            username_input.fill(username)
+            self._click_continue()
+            time.sleep(2)
+
+            if self._two_factor_required():
+                self.log(
+                    "ERROR: Proton 2FA required — complete login in a browser and "
+                    "export session cookies instead"
+                )
+                return False
+
+            password_input = self.page.locator(
+                "input#password, input[name='password'], input[type='password']"
+            ).first
+            password_input.wait_for(state="visible", timeout=45000)
+            password_input.fill(password)
+            self._click_continue()
+            return self._wait_for_login_success()
+        except PlaywrightTimeout as exc:
+            self.log(f"login form not found: {exc}")
+            return False
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"login error: {exc}")
+            return False
+
+    def _click_continue(self) -> None:
+        for selector in (
+            "button[type='submit']",
+            "button.button-solid-norm",
+            "button.button-solid",
+        ):
+            try:
+                btn = self.page.locator(selector).first
+                if btn.is_visible():
+                    btn.click(timeout=3000)
+                    return
+            except Exception:
+                continue
+        for btn in self.page.locator("button").all():
+            label = (btn.text_content() or "").strip().lower()
+            if label in {"sign in", "log in", "continue", "next"}:
+                if btn.is_visible() and btn.is_enabled():
+                    btn.click()
+                    return
+
+    def _two_factor_required(self) -> bool:
+        src = self.page.content().lower()
+        return any(
+            token in src
+            for token in (
+                "two-factor",
+                "two factor",
+                "authenticator",
+                "verification code",
+                "enter the code",
+            )
+        )
+
+    def _wait_for_login_success(self) -> bool:
+        deadline = time.time() + int(os.getenv("PROTON_LOGIN_TIMEOUT", "120"))
+        while time.time() < deadline:
+            if self._two_factor_required():
+                self.log(
+                    "ERROR: Proton 2FA required — complete login in a browser and "
+                    "export session cookies instead"
+                )
+                return False
+            url = self.page.url.lower()
+            if "login" not in url or "subscription" in url:
+                if self._session_reaches_invoices():
+                    self.log("login successful")
+                    return True
+            time.sleep(2)
+        self.log("login timed out waiting for subscription page")
+        return False
 
     def _list_invoices_api(self) -> list[dict] | None:
         """Return invoice dicts from Proton payments API, or None on hard failure."""
@@ -140,7 +265,7 @@ class ProtonAddon(Addon):
         self.page.goto(INVOICES_PAGE, wait_until="domcontentloaded")
         time.sleep(5)
         if "login" in self.page.url.lower() and "subscription" not in self.page.url.lower():
-            self.log("session cookies did not reach subscription page")
+            self.log("not authenticated on subscription page")
             return []
 
         # Proton renders invoice rows with action menus; collect stable IDs from links/buttons.
