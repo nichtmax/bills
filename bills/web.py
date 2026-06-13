@@ -102,7 +102,6 @@ LAYOUT_TOP = """<!doctype html>
   <a href="{{ url_for('dashboard') }}">⌂ Dashboard</a>
   <a href="{{ url_for('invoices_view') }}">📄 Invoices</a>
   <a href="{{ url_for('config_view') }}">⚙ Config</a>
-  <a href="{{ url_for('schedule_view') }}">📅 Schedules</a>
   <span class="nav-spacer"></span>
   <button type="button" class="btn secondary sm" id="notify-enable" style="display:none"
           title="Browser notifications when addon runs finish">
@@ -452,17 +451,8 @@ CONFIG_PAGE = LAYOUT_TOP + """
       {% endfor %}
       </div>
     {% endfor %}
-    <div style="margin-top:18px"><button type="submit"><span class="sym">💾</span> Save configuration</button></div>
-  </form>
-</div>
-""" + LAYOUT_BOT
-
-SCHEDULE_PAGE = LAYOUT_TOP + """
-<div class="card">
-  <h1>Schedules</h1>
-  <p class="muted">Per-addon cron expressions. Saved to SQLite (<code>bills.db</code> schedules table) and
-     picked up by the running scheduler within ~30s.</p>
-  <form method="post">
+    <h2 id="schedules" style="margin-top:24px">Schedules</h2>
+    <p class="muted">Per-addon cron expressions. Saved to SQLite (<code>bills.db</code>) and picked up within ~30s.</p>
     <table>
       <tr><th>Addon</th><th>Cron</th><th>Next run</th></tr>
       {% for a in addons %}
@@ -473,10 +463,10 @@ SCHEDULE_PAGE = LAYOUT_TOP + """
       </tr>
       {% endfor %}
     </table>
-    <div style="margin-top:14px"><button type="submit"><span class="sym">💾</span> Save schedules</button></div>
+    <p class="muted" style="margin-top:8px">Examples: <code>0 6 * * 1</code> (Mon 06:00),
+       <code>0 6 5 * *</code> (5th 06:00), <code>0 6 1 4 *</code> (1 Apr 06:00).</p>
+    <div style="margin-top:18px"><button type="submit"><span class="sym">💾</span> Save configuration</button></div>
   </form>
-  <p class="muted" style="margin-top:12px">Examples: <code>0 6 * * 1</code> (Mon 06:00),
-     <code>0 6 1 * *</code> (1st 06:00), <code>*/30 * * * *</code> (every 30 min).</p>
 </div>
 """ + LAYOUT_BOT
 
@@ -491,6 +481,33 @@ def _group_invoices(rows):
     for row in rows:
         groups.setdefault(row.addon, []).append(row)
     return sorted(groups.items(), key=lambda item: item[1][0].sort_key(), reverse=True)
+
+
+def _schedule_context(cfg: Config) -> tuple[list[str], dict[str, str], dict[str, str]]:
+    addons = _known_addons(cfg)
+    crons = {a: cfg.cron(a) for a in addons}
+    nexts: dict[str, str] = {}
+    now = datetime.now()
+    for a in addons:
+        try:
+            nexts[a] = croniter(crons[a], now).get_next(datetime).strftime("%Y-%m-%d %H:%M")
+        except (ValueError, KeyError):
+            nexts[a] = "invalid"
+    return addons, crons, nexts
+
+
+def _save_schedules_from_form(addons: list[str]) -> list[str]:
+    errors = []
+    for a in addons:
+        expr = request.form.get(f"cron_{a}", "").strip()
+        if not expr:
+            db.delete_schedule(a)
+            continue
+        if not croniter.is_valid(expr):
+            errors.append(f"{a}: invalid cron '{expr}'")
+            continue
+        db.set_schedule(a, expr)
+    return errors
 
 
 def create_app() -> Flask:
@@ -530,6 +547,7 @@ def create_app() -> Flask:
     @app.route("/config", methods=["GET", "POST"])
     def config_view():
         cfg = Config()
+        addons, crons, nexts = _schedule_context(cfg)
         if request.method == "POST":
             settings = load_settings()
             for section in SETTINGS_SCHEMA:
@@ -554,8 +572,12 @@ def create_app() -> Flask:
                         else:
                             settings.pop(key, None)
             save_settings(settings)
-            flash("Configuration saved", "ok")
-            return redirect(url_for("config_view"))
+            schedule_errors = _save_schedules_from_form(addons)
+            if schedule_errors:
+                flash("Configuration saved; schedule errors: " + "; ".join(schedule_errors), "err")
+            else:
+                flash("Configuration saved", "ok")
+            return redirect(url_for("config_view") + "#schedules")
 
         values: dict = {}
         for section in SETTINGS_SCHEMA:
@@ -570,41 +592,18 @@ def create_app() -> Flask:
                     default = f.get("default", "")
                     values[key] = raw if raw else default
         return render_template_string(
-            CONFIG_PAGE, schema=SETTINGS_SCHEMA, values=values, config_dir=cfg.config_dir
+            CONFIG_PAGE,
+            schema=SETTINGS_SCHEMA,
+            values=values,
+            config_dir=cfg.config_dir,
+            addons=addons,
+            crons=crons,
+            nexts=nexts,
         )
 
     @app.route("/schedule", methods=["GET", "POST"])
     def schedule_view():
-        cfg = Config()
-        addons = _known_addons(cfg)
-        if request.method == "POST":
-            errors = []
-            for a in addons:
-                expr = request.form.get(f"cron_{a}", "").strip()
-                if not expr:
-                    db.delete_schedule(a)
-                    continue
-                if not croniter.is_valid(expr):
-                    errors.append(f"{a}: invalid cron '{expr}'")
-                    continue
-                db.set_schedule(a, expr)
-            if errors:
-                flash("; ".join(errors), "err")
-            else:
-                flash("Schedules saved", "ok")
-            return redirect(url_for("schedule_view"))
-
-        crons = {a: cfg.cron(a) for a in addons}
-        nexts = {}
-        now = datetime.now()
-        for a in addons:
-            try:
-                nexts[a] = croniter(crons[a], now).get_next(datetime).strftime("%Y-%m-%d %H:%M")
-            except (ValueError, KeyError):
-                nexts[a] = "invalid"
-        return render_template_string(
-            SCHEDULE_PAGE, addons=addons, crons=crons, nexts=nexts, config_dir=cfg.config_dir
-        )
+        return redirect(url_for("config_view") + "#schedules")
 
     @app.route("/mail/test", methods=["POST"])
     def mail_test():

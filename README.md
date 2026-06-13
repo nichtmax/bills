@@ -74,8 +74,7 @@ python -m bills list              # list registered addons
 
 - **Dashboard** — trigger on-demand runs, live status/logs per addon.
 - **Invoices** — table from SQLite with mail status; download and Mail/Re-send buttons.
-- **Config** — edit settings persisted to `/config/settings.json`.
-- **Schedules** — edit cron expressions persisted to SQLite `schedules` table.
+- **Config** — edit settings persisted to `/config/settings.json` and per-addon cron schedules.
 - **Send mail** — test email and re-send latest invoice per addon.
 
 ## Configuration
