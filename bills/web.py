@@ -16,6 +16,7 @@ from flask import (
     redirect,
     render_template_string,
     request,
+    send_file,
     url_for,
 )
 
@@ -32,6 +33,7 @@ from .config import (
     save_settings,
 )
 from .core.mailer import Mailer
+from .invoices import list_invoices, resolve_pdf_path
 from .runner import GLOBAL as runner
 
 LAYOUT_TOP = """<!doctype html>
@@ -68,7 +70,9 @@ LAYOUT_TOP = """<!doctype html>
   .b-idle { background: #2a2f3a; color: #aab; }
   .b-running { background: #6b4a00; color: #ffd479; }
   .b-success { background: #14502a; color: #7be0a3; }
-  .b-failed { background: #5a1620; color: #ff8d9b; }
+  .b-manifest { background: #14502a; color: #7be0a3; }
+  .b-file-only { background: #2a3a5a; color: #8ab4f8; }
+  .b-missing { background: #5a4a16; color: #ffd479; }
   .muted { color: #889; font-size: 12px; }
   .flash { padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; }
   .flash.ok { background: #14502a; } .flash.err { background: #5a1620; }
@@ -80,6 +84,7 @@ LAYOUT_TOP = """<!doctype html>
 <nav>
   <span class="brand">bills</span>
   <a href="{{ url_for('dashboard') }}">Dashboard</a>
+  <a href="{{ url_for('invoices_view') }}">Invoices</a>
   <a href="{{ url_for('config_view') }}">Config</a>
   <a href="{{ url_for('schedule_view') }}">Schedules</a>
 </nav>
@@ -171,6 +176,41 @@ async function poll() {
 poll();
 setInterval(poll, 2000);
 </script>
+""" + LAYOUT_BOT
+
+INVOICES_PAGE = LAYOUT_TOP + """
+<div class="card">
+  <h1>Invoices</h1>
+  <p class="muted">{{ rows|length }} PDF(s) under {{ download_root }}. Status:
+     <span class="badge b-manifest">manifest</span> tracked in .manifest.json,
+     <span class="badge b-file-only">file-only</span> on disk only.</p>
+  {% if rows %}
+  <table>
+    <tr>
+      <th>Addon</th><th>Date</th><th>Provider</th><th>Number</th>
+      <th>Filename</th><th>Added</th><th>Status</th><th></th>
+    </tr>
+    {% for r in rows %}
+    <tr>
+      <td>{{ r.addon }}</td>
+      <td>{{ r.date }}</td>
+      <td>{{ r.provider }}</td>
+      <td>{{ r.number }}</td>
+      <td>{{ r.filename }}</td>
+      <td class="muted">{{ r.added }}</td>
+      <td><span class="badge {% if r.status == 'manifest' %}b-manifest{% elif 'missing' in r.status %}b-missing{% else %}b-file-only{% endif %}">{{ r.status }}</span></td>
+      <td>
+        {% if r.status != 'manifest (missing file)' %}
+        <a href="{{ url_for('invoice_download', addon=r.addon, filename=r.filename) }}">Download</a>
+        {% else %}—{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="muted">No invoices found yet.</p>
+  {% endif %}
+</div>
 """ + LAYOUT_BOT
 
 CONFIG_PAGE = LAYOUT_TOP + """
@@ -371,6 +411,25 @@ def create_app() -> Flask:
             "ok" if sent else "err",
         )
         return redirect(url_for("dashboard"))
+
+    @app.route("/invoices")
+    def invoices_view():
+        cfg = Config()
+        rows = list_invoices(cfg)
+        return render_template_string(
+            INVOICES_PAGE,
+            rows=rows,
+            download_root=cfg.download_root,
+        )
+
+    @app.route("/invoices/<addon>/<filename>")
+    def invoice_download(addon, filename):
+        cfg = Config()
+        path = resolve_pdf_path(cfg, addon, filename)
+        if not path:
+            flash("Invoice not found", "err")
+            return redirect(url_for("invoices_view"))
+        return send_file(path, mimetype="application/pdf", as_attachment=True, download_name=filename)
 
     return app
 
