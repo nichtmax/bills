@@ -221,6 +221,8 @@ INVOICES_PAGE = LAYOUT_TOP + """
       <td>
         <div class="btn-group">
         {% if r.file_exists %}
+        <a class="btn ghost sm icon-only" href="{{ url_for('invoice_view', addon=r.addon, filename=r.filename) }}"
+           target="_blank" rel="noopener" title="View PDF in browser"><span class="sym">👁</span></a>
         <a class="btn ghost sm icon-only" href="{{ url_for('invoice_download', addon=r.addon, filename=r.filename) }}"
            title="Download PDF"><span class="sym">⬇</span></a>
         <form method="post" action="{{ url_for('invoice_mail', addon=r.addon, filename=r.filename) }}" style="display:inline">
@@ -494,6 +496,15 @@ def create_app() -> Flask:
             hidden_count=hidden_count,
             download_root=cfg.download_root,
         )
+
+    @app.route("/invoices/<addon>/<filename>/view")
+    def invoice_view(addon, filename):
+        cfg = Config()
+        path = resolve_pdf_path(cfg, addon, filename)
+        if not path:
+            flash("Invoice not found", "err")
+            return redirect(url_for("invoices_view"))
+        return send_file(path, mimetype="application/pdf")
 
     @app.route("/invoices/<addon>/<filename>")
     def invoice_download(addon, filename):
