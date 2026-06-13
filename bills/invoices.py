@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 
 from . import db
@@ -25,14 +24,13 @@ class InvoiceRow:
     id: int
     addon: str
     date: str
-    provider: str
-    number: str
     filename: str
     added: str
-    status: str  # tracked | file-only
     mailed: bool
     mailed_at: str
     mailed_to: str
+    mail_sender: str
+    mail_protocol: str
     file_exists: bool
 
     def sort_key(self) -> tuple:
@@ -47,68 +45,30 @@ def _parse_filename(name: str) -> tuple[str, str, str]:
 
 
 def list_invoices(cfg: Config, addon: str | None = None) -> list[InvoiceRow]:
+    db.sync_pdfs_from_disk(cfg.download_root)
     rows: list[InvoiceRow] = []
     db_rows = db.list_invoices_db(addon)
-    seen_files: set[tuple[str, str]] = set()
 
     for r in db_rows:
         fp = Path(r["file_path"]) if r["file_path"] else Path(cfg.download_root) / r["addon"] / r["filename"]
         exists = fp.is_file()
-        seen_files.add((r["addon"], r["filename"]))
         date = r["date"] or _parse_filename(r["filename"])[0] or "—"
-        provider = REGISTRY[r["addon"]].provider if r["addon"] in REGISTRY else r["addon"]
-        number = r["number"] or r["invoice_key"] or "—"
-        mailed, mailed_at, mailed_to = db.mail_status(int(r["id"]))
+        mailed, mailed_at, mailed_to, mail_sender, mail_protocol = db.mail_status(int(r["id"]))
         rows.append(
             InvoiceRow(
                 id=int(r["id"]),
                 addon=r["addon"],
                 date=date,
-                provider=provider,
-                number=str(number),
                 filename=r["filename"],
                 added=r["downloaded_at"] or r["discovered_at"] or "—",
-                status="tracked" if exists else "tracked (missing file)",
                 mailed=mailed,
                 mailed_at=mailed_at,
                 mailed_to=mailed_to,
+                mail_sender=mail_sender,
+                mail_protocol=mail_protocol,
                 file_exists=exists,
             )
         )
-
-    # PDFs on disk not yet in DB
-    addons = [addon] if addon else sorted(REGISTRY.keys())
-    for name in addons:
-        ddir = Path(cfg.download_root) / name
-        if not ddir.is_dir():
-            continue
-        for pdf in ddir.glob("*.pdf"):
-            if (name, pdf.name) in seen_files:
-                continue
-            date, provider, number = _parse_filename(pdf.name)
-            if not provider:
-                provider = REGISTRY[name].provider if name in REGISTRY else name
-            mtime = datetime.now().isoformat(timespec="seconds")
-            try:
-                mtime = datetime.fromtimestamp(pdf.stat().st_mtime).isoformat(timespec="seconds")
-            except OSError:
-                pass
-            rows.append(
-                InvoiceRow(
-                    id=0,
-                    addon=name,
-                    date=date or "—",
-                    provider=provider,
-                    number=number or "—",
-                    filename=pdf.name,
-                    added=mtime,
-                    status="file-only",
-                    mailed=False,
-                    mailed_at="",
-                    mailed_to="",
-                    file_exists=True,
-                )
-            )
 
     rows.sort(key=lambda r: r.sort_key(), reverse=True)
     return rows
@@ -170,7 +130,15 @@ def mail_invoice(cfg: Config, addon: str, filename: str) -> tuple[bool, str]:
     )
     if not sent:
         key = store.find_key_by_filename(filename) or filename.replace(".pdf", "")
-        store.mark_mailed(key, mailer.cfg.recipient, subject=subject, success=False, error="SMTP failed")
+        store.mark_mailed(
+            key,
+            mailer.cfg.recipient,
+            subject=subject,
+            success=False,
+            error="SMTP failed",
+            sender=mailer.cfg.sender,
+            protocol=mailer.cfg.protocol,
+        )
         return False, "SMTP send failed (check mail settings)"
 
     key = store.find_key_by_filename(filename)
@@ -178,7 +146,14 @@ def mail_invoice(cfg: Config, addon: str, filename: str) -> tuple[bool, str]:
         _, _, number = _parse_filename(filename)
         key = number or filename.replace(".pdf", "")
         store.ensure_entry(key, filename)
-    store.mark_mailed(key, mailer.cfg.recipient, subject=subject, success=True)
+    store.mark_mailed(
+        key,
+        mailer.cfg.recipient,
+        subject=subject,
+        success=True,
+        sender=mailer.cfg.sender,
+        protocol=mailer.cfg.protocol,
+    )
     return True, f"sent to {mailer.cfg.recipient}"
 
 

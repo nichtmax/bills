@@ -193,22 +193,25 @@ setInterval(poll, 2000);
 INVOICES_PAGE = LAYOUT_TOP + """
 <div class="card">
   <h1>Invoices</h1>
-  <p class="muted">{{ rows|length }} PDF(s) under {{ download_root }}. Status:
-     <span class="badge b-tracked">tracked</span> in SQLite,
-     <span class="badge b-file-only">file-only</span> on disk only.</p>
+  <p class="muted">{{ rows|length }} invoice(s) under {{ download_root }}.</p>
   {% if rows %}
   <table>
     <tr>
-      <th>Addon</th><th>Date</th><th>Added</th><th>Status</th><th>Mailed</th><th></th>
+      <th>Addon</th><th>Date</th><th>Added</th><th>Mailed</th><th>Sender protocol</th><th></th>
     </tr>
     {% for r in rows %}
     <tr>
       <td>{{ r.addon }}</td>
       <td>{{ r.date }}</td>
       <td class="muted">{{ r.added }}</td>
-      <td><span class="badge {% if r.status == 'tracked' %}b-tracked{% elif 'missing' in r.status %}b-missing{% else %}b-file-only{% endif %}">{{ r.status }}</span></td>
       <td class="muted">
         {% if r.mailed %}<span title="Emailed">✓</span> Yes{% if r.mailed_at %}<br><small>{{ r.mailed_at }}</small>{% endif %}{% else %}<span title="Not emailed">○</span> No{% endif %}
+      </td>
+      <td class="muted">
+        {% if r.mail_sender or r.mail_protocol %}
+          {% if r.mail_sender %}{{ r.mail_sender }}{% endif %}
+          {% if r.mail_protocol %}<br><small>{{ r.mail_protocol }}</small>{% endif %}
+        {% else %}—{% endif %}
       </td>
       <td>
         <div class="btn-group">

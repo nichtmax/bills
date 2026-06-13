@@ -59,17 +59,17 @@ class InvoiceStore:
 
     @staticmethod
     def is_mailed(invoice_id: int) -> bool:
-        mailed, _, _ = db.mail_status(invoice_id)
+        mailed, _, _, _, _ = db.mail_status(invoice_id)
         return mailed
 
     @staticmethod
     def mailed_at(invoice_id: int) -> str:
-        _, at, _ = db.mail_status(invoice_id)
+        _, at, _, _, _ = db.mail_status(invoice_id)
         return at
 
     @staticmethod
     def mailed_to(invoice_id: int) -> str:
-        _, _, to = db.mail_status(invoice_id)
+        _, _, to, _, _ = db.mail_status(invoice_id)
         return to
 
     def mark_mailed(
@@ -80,6 +80,8 @@ class InvoiceStore:
         subject: str = "",
         success: bool = True,
         error: str | None = None,
+        sender: str | None = None,
+        protocol: str | None = None,
     ) -> None:
         row = db.get_invoice_by_key(self.addon, key)
         if not row:
@@ -92,6 +94,8 @@ class InvoiceStore:
             subject=subject or f"{self.addon} invoice",
             success=success,
             error=error,
+            sender=sender,
+            protocol=protocol,
         )
 
     def mark_mailed_by_filename(
@@ -102,6 +106,8 @@ class InvoiceStore:
         subject: str = "",
         success: bool = True,
         error: str | None = None,
+        sender: str | None = None,
+        protocol: str | None = None,
     ) -> None:
         row = db.get_invoice_by_filename(self.addon, filename)
         if row:
@@ -111,4 +117,6 @@ class InvoiceStore:
                 subject=subject or f"{self.addon} invoice: {filename}",
                 success=success,
                 error=error,
+                sender=sender,
+                protocol=protocol,
             )

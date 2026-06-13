@@ -110,6 +110,15 @@ def init_db() -> None:
             "INSERT OR IGNORE INTO schema_meta(key, value) VALUES('version', ?)",
             (str(SCHEMA_VERSION),),
         )
+        _migrate_schema(conn)
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(mail_events)").fetchall()}
+    if "sender" not in cols:
+        conn.execute("ALTER TABLE mail_events ADD COLUMN sender TEXT")
+    if "protocol" not in cols:
+        conn.execute("ALTER TABLE mail_events ADD COLUMN protocol TEXT")
 
 
 def file_sha256(path: Path) -> str | None:
@@ -231,14 +240,27 @@ def add_mail_event(
     success: bool = True,
     error: str | None = None,
     sent_at: str | None = None,
+    sender: str | None = None,
+    protocol: str | None = None,
 ) -> int:
     with connect() as conn:
         cur = conn.execute(
             """
-            INSERT INTO mail_events(invoice_id, recipient, subject, sent_at, success, error)
-            VALUES(?,?,?,?,?,?)
+            INSERT INTO mail_events(
+                invoice_id, recipient, subject, sent_at, success, error, sender, protocol
+            )
+            VALUES(?,?,?,?,?,?,?,?)
             """,
-            (invoice_id, recipient, subject, sent_at or _now(), 1 if success else 0, error),
+            (
+                invoice_id,
+                recipient,
+                subject,
+                sent_at or _now(),
+                1 if success else 0,
+                error,
+                sender,
+                protocol,
+            ),
         )
         return int(cur.lastrowid)
 
@@ -255,12 +277,23 @@ def latest_mail_event(invoice_id: int) -> sqlite3.Row | None:
         ).fetchone()
 
 
-def mail_status(invoice_id: int) -> tuple[bool, str, str]:
-    """Return (mailed, sent_at, recipient) based on successful mail events."""
+def mail_status(invoice_id: int) -> tuple[bool, str, str, str, str]:
+    """Return (mailed, sent_at, recipient, sender, protocol) from latest successful send."""
     ev = latest_mail_event(invoice_id)
     if ev:
-        return True, ev["sent_at"], ev["recipient"] or ""
-    return False, "", ""
+        return (
+            True,
+            ev["sent_at"],
+            ev["recipient"] or "",
+            ev["sender"] or "",
+            ev["protocol"] or "",
+        )
+    return False, "", "", "", ""
+
+
+def sync_pdfs_from_disk(download_root: str | Path) -> int:
+    """Register any on-disk PDFs missing from the database."""
+    return _scan_pdfs(Path(download_root))
 
 
 # -- runs --------------------------------------------------------------------

@@ -77,7 +77,13 @@ class Addon:
         if sent:
             key = self.store.find_key_by_filename(path.name)
             if key:
-                self.store.mark_mailed(key, self.mailer.cfg.recipient, subject=subject)
+                self.store.mark_mailed(
+                    key,
+                    self.mailer.cfg.recipient,
+                    subject=subject,
+                    sender=self.mailer.cfg.sender,
+                    protocol=self.mailer.cfg.protocol,
+                )
         return sent
 
     def log(self, msg: str) -> None:

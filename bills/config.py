@@ -133,6 +133,11 @@ class MailConfig:
     def usable(self) -> bool:
         return bool(self.server and self.sender and self.password and self.recipient)
 
+    @property
+    def protocol(self) -> str:
+        """SMTP transport label stored with mail events."""
+        return f"smtp+starttls://{self.server}:{self.port}"
+
 
 _TRUE = ("1", "true", "yes", "on")
 
