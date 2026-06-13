@@ -200,13 +200,14 @@ INVOICES_PAGE = LAYOUT_TOP + """
   {% if groups %}
   <table>
     <tr>
-      <th>Addon</th><th>Date</th><th>Added</th><th>Mailed</th><th>Sender protocol</th><th></th>
+      <th>Addon</th><th>Date</th><th>Number</th><th>Added</th><th>Mailed</th><th>Sender protocol</th><th></th>
     </tr>
     {% for addon, invs in groups %}
     {% for r in invs %}
     <tr class="inv-row{% if not loop.first %} inv-older inv-older-{{ addon }}{% endif %}">
       <td>{{ r.addon }}</td>
       <td>{{ r.date }}</td>
+      <td>{{ r.number }}</td>
       <td class="muted">{{ r.added }}</td>
       <td class="muted">
         {% if r.mailed %}<span title="Emailed">✓</span> Yes{% if r.mailed_at %}<br><small>{{ r.mailed_at }}</small>{% endif %}{% else %}<span title="Not emailed">○</span> No{% endif %}
@@ -239,7 +240,7 @@ INVOICES_PAGE = LAYOUT_TOP + """
     {% endfor %}
     {% if invs|length > 1 %}
     <tr class="inv-expand">
-      <td colspan="6">
+      <td colspan="7">
         <button type="button" class="btn secondary sm inv-toggle inv-toggle-{{ addon }}"
                 data-addon="{{ addon }}" data-count="{{ invs|length - 1 }}" onclick="toggleInvoices('{{ addon }}')">
           <span class="sym inv-toggle-icon-{{ addon }}">▸</span>

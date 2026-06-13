@@ -25,6 +25,7 @@ class InvoiceRow:
     id: int
     addon: str
     date: str
+    number: str
     filename: str
     added: str
     mailed: bool
@@ -54,12 +55,14 @@ def list_invoices(cfg: Config, addon: str | None = None) -> list[InvoiceRow]:
         fp = Path(r["file_path"]) if r["file_path"] else Path(cfg.download_root) / r["addon"] / r["filename"]
         exists = fp.is_file()
         date = r["date"] or _parse_filename(r["filename"])[0] or "—"
+        number = r["number"] or _parse_filename(r["filename"])[2] or "—"
         mailed, mailed_at, mailed_to, mail_sender, mail_protocol = db.mail_status(int(r["id"]))
         rows.append(
             InvoiceRow(
                 id=int(r["id"]),
                 addon=r["addon"],
                 date=date,
+                number=number,
                 filename=r["filename"],
                 added=r["downloaded_at"] or r["discovered_at"] or "—",
                 mailed=mailed,
