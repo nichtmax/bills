@@ -19,6 +19,7 @@ from flask import (
     send_file,
     url_for,
 )
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from croniter import croniter
 from datetime import datetime
@@ -516,11 +517,39 @@ def _save_schedules_from_form(addons: list[str]) -> list[str]:
     return errors
 
 
+def _configure_https(app: Flask) -> None:
+    """Trust Cloudflare / reverse-proxy headers and enforce HTTPS at the edge."""
+    app.wsgi_app = ProxyFix(
+        app.wsgi_app,
+        x_for=1,
+        x_proto=1,
+        x_host=1,
+        x_port=1,
+        x_prefix=1,
+    )
+
+    behind_https = os.getenv("BILLS_BEHIND_HTTPS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if behind_https:
+        app.config["SESSION_COOKIE_SECURE"] = True
+        app.config["PREFERRED_URL_SCHEME"] = "https"
+
+    @app.before_request
+    def redirect_to_https():
+        if request.headers.get("X-Forwarded-Proto") == "http":
+            return redirect(request.url.replace("http://", "https://", 1), code=301)
+
+
 def create_app() -> Flask:
     app = Flask(__name__)
     app.secret_key = os.getenv("BILLS_WEB_SECRET", "bills-local-secret")
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    _configure_https(app)
     register_auth(app)
 
     @app.route("/")
