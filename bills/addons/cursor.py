@@ -114,15 +114,21 @@ class CursorAddon(Addon):
         self.log(f"trying session cookies ({len(cookies)} exported)")
         added = inject_cookies(self.context, cookies, log=self.log)
         self.log(f"injected {added} cookies")
+        if flaresolverr_enabled():
+            self._start_flaresolverr()
+            try:
+                self._flaresolverr_preflight(BILLING_URL)
+            finally:
+                self._stop_flaresolverr()
         self._safe_goto(BILLING_URL)
-        time.sleep(3)
+        time.sleep(5)
         if human_challenge_visible(self._page_source()):
             self.log("Cloudflare challenge after session cookies; trying FlareSolverr")
             self._start_flaresolverr()
             try:
                 self._flaresolverr_preflight(BILLING_URL)
                 self._safe_goto(BILLING_URL)
-                time.sleep(3)
+                time.sleep(5)
             finally:
                 self._stop_flaresolverr()
         if self._on_dashboard():
@@ -295,11 +301,20 @@ class CursorAddon(Addon):
         return True
 
     def _open_stripe_portal(self) -> bool:
+        for href in self.page.locator("a[href*='billing.stripe.com']").all():
+            url = href.get_attribute("href") or ""
+            if url:
+                self.log(f"opening Stripe portal link: {url[:80]}...")
+                self._safe_goto(url)
+                time.sleep(3)
+                if "stripe.com" in self.page.url.lower():
+                    break
+
         lower = "translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')"
         clicked = False
         for needle in (
             "manage in stripe", "manage subscription", "manage billing",
-            "billing portal", "stripe",
+            "billing portal", "view invoices", "invoices", "stripe",
         ):
             xpath = f"xpath=//*[self::a or self::button][contains({lower}, '{needle}')]"
             try:
@@ -323,8 +338,14 @@ class CursorAddon(Addon):
                 break
             except Exception:
                 continue
-        if not clicked:
+        if not clicked and "stripe.com" not in self.page.url.lower():
             self.log("Stripe portal button not found")
+            try:
+                shot = Path(self.config.config_dir) / "cursor-billing-debug.png"
+                self.page.screenshot(path=str(shot), full_page=True)
+                self.log(f"saved debug screenshot: {shot}")
+            except Exception as exc:
+                self.log(f"could not save debug screenshot: {exc}")
             return False
         time.sleep(2)
         self.log(f"Stripe portal URL: {self.page.url}")
