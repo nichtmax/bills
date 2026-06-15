@@ -114,7 +114,7 @@ class CursorAddon(Addon):
         self.log(f"trying session cookies ({len(cookies)} exported)")
         added = inject_cookies(self.context, cookies, log=self.log)
         self.log(f"injected {added} cookies")
-        self.page.goto(BILLING_URL, wait_until="domcontentloaded")
+        self._safe_goto(BILLING_URL)
         time.sleep(3)
         if self._on_dashboard():
             self.log("session cookies valid - skipping password login")
@@ -245,8 +245,25 @@ class CursorAddon(Addon):
         url = self.page.url.lower()
         return "cursor.com/dashboard" in url and "login" not in url and "auth" not in url
 
+    def _safe_goto(self, url: str, *, wait_until: str = "domcontentloaded") -> None:
+        try:
+            self.page.goto(url, wait_until=wait_until)
+        except Exception as exc:
+            if "crash" not in str(exc).lower():
+                raise
+            self.log(f"page crashed navigating to {url}, opening fresh tab")
+            self.page = self.context.new_page()
+            self.page.goto(url, wait_until=wait_until)
+
     def _open_billing(self) -> bool:
-        self.page.goto(BILLING_URL, wait_until="domcontentloaded")
+        if self._on_dashboard():
+            self.log("billing dashboard already open")
+            return True
+        try:
+            self._safe_goto(BILLING_URL)
+        except Exception as exc:
+            self.log(f"billing dashboard navigation failed: {exc}")
+            return False
         time.sleep(3)
         if not self._on_dashboard():
             self.log("billing dashboard unreachable")
