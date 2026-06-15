@@ -116,6 +116,15 @@ class CursorAddon(Addon):
         self.log(f"injected {added} cookies")
         self._safe_goto(BILLING_URL)
         time.sleep(3)
+        if human_challenge_visible(self.page.content()):
+            self.log("Cloudflare challenge after session cookies; trying FlareSolverr")
+            self._start_flaresolverr()
+            try:
+                self._flaresolverr_preflight(BILLING_URL)
+                self._safe_goto(BILLING_URL)
+                time.sleep(3)
+            finally:
+                self._stop_flaresolverr()
         if self._on_dashboard():
             self.log("session cookies valid - skipping password login")
             return True
@@ -243,6 +252,8 @@ class CursorAddon(Addon):
 
     def _on_dashboard(self) -> bool:
         url = self.page.url.lower()
+        if human_challenge_visible(self.page.content()):
+            return False
         return "cursor.com/dashboard" in url and "login" not in url and "auth" not in url
 
     def _safe_goto(self, url: str, *, wait_until: str = "domcontentloaded") -> None:
@@ -258,6 +269,7 @@ class CursorAddon(Addon):
     def _open_billing(self) -> bool:
         if self._on_dashboard():
             self.log("billing dashboard already open")
+            time.sleep(5)
             return True
         try:
             self._safe_goto(BILLING_URL)
