@@ -116,7 +116,7 @@ class CursorAddon(Addon):
         self.log(f"injected {added} cookies")
         self._safe_goto(BILLING_URL)
         time.sleep(3)
-        if human_challenge_visible(self.page.content()):
+        if human_challenge_visible(self._page_source()):
             self.log("Cloudflare challenge after session cookies; trying FlareSolverr")
             self._start_flaresolverr()
             try:
@@ -164,7 +164,7 @@ class CursorAddon(Addon):
         )
 
     def _check_human_challenge(self, step: str) -> bool:
-        if not human_challenge_visible(self.page.content()):
+        if not human_challenge_visible(self._page_source()):
             return False
         self.log(f"human verification blocked login at {step}")
         if self.fs:
@@ -172,7 +172,7 @@ class CursorAddon(Addon):
                 solution = self.fs.get(self.page.url)
                 self.fs.apply_to_context(self.context, solution, log=self.log)
                 time.sleep(2)
-                if not human_challenge_visible(self.page.content()):
+                if not human_challenge_visible(self._page_source()):
                     self.log("FlareSolverr cleared challenge")
                     return False
             except RuntimeError as exc:
@@ -225,7 +225,7 @@ class CursorAddon(Addon):
                     if self._check_human_challenge("waiting-for-dashboard"):
                         return False
                     time.sleep(2)
-                if human_challenge_visible(self.page.content()):
+                if human_challenge_visible(self._page_source()):
                     self._check_human_challenge("timeout")
                     return False
                 self.log("login timed out waiting for dashboard redirect")
@@ -250,9 +250,20 @@ class CursorAddon(Addon):
                 btn.click()
                 return
 
+    def _page_source(self) -> str:
+        try:
+            self.page.wait_for_load_state("domcontentloaded", timeout=15000)
+        except PlaywrightTimeout:
+            pass
+        try:
+            return self.page.content()
+        except Exception:
+            time.sleep(2)
+            return self.page.content()
+
     def _on_dashboard(self) -> bool:
         url = self.page.url.lower()
-        if human_challenge_visible(self.page.content()):
+        if human_challenge_visible(self._page_source()):
             return False
         return "cursor.com/dashboard" in url and "login" not in url and "auth" not in url
 
