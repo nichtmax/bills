@@ -6,11 +6,13 @@ from ..core.addon import Addon
 from .cursor import CursorAddon
 from .proton import ProtonAddon
 from .vodafone import VodafoneAddon
+from .zai import ZaiAddon
 
 REGISTRY: dict[str, type[Addon]] = {
     VodafoneAddon.name: VodafoneAddon,
     CursorAddon.name: CursorAddon,
     ProtonAddon.name: ProtonAddon,
+    ZaiAddon.name: ZaiAddon,
 }
 
 

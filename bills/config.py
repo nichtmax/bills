@@ -21,6 +21,7 @@ DEFAULT_CRON = {
     "vodafone": "0 6 * * 1",   # weekly, Monday 06:00
     "cursor": "0 6 1 * *",     # monthly, 1st 06:00
     "proton": "0 6 1 * *",     # monthly, 1st 06:00
+    "zai": "0 6 1 * *",        # monthly, 1st 06:00
 }
 
 # Keys whose values must never be rendered in plaintext in the web UI.
@@ -111,6 +112,19 @@ SETTINGS_SCHEMA = [
             {"key": "PROTON_PASSWORT", "label": "Password", "type": "secret"},
             {
                 "key": "PROTON_SESSION_COOKIES_FILE",
+                "label": "Session cookies file (fallback)",
+                "type": "text",
+            },
+        ],
+    },
+    {
+        "section": "Z.ai",
+        "fields": [
+            {"key": "ZAI_API_KEY", "label": "API key (preferred)", "type": "secret"},
+            {"key": "ZAI_EMAIL", "label": "Email / username", "type": "text"},
+            {"key": "ZAI_PASSWORD", "label": "Password", "type": "secret"},
+            {
+                "key": "ZAI_SESSION_COOKIES_FILE",
                 "label": "Session cookies file (fallback)",
                 "type": "text",
             },
