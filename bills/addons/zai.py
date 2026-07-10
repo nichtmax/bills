@@ -39,13 +39,25 @@ class ZaiAddon(Addon):
         self.page = self.browser.page
         self.context = self.browser.context
         try:
-            if api_key and self._try_api_key(api_key):
-                self.log("API key auth worked")
-            elif token and self._try_token_auth(token):
-                self.log("bearer token auth worked")
-            elif self._try_session_auth():
+            # Try various auth methods (prefer session/token over password login)
+            auth_worked = False
+            
+            # Try session cookies first (most reliable)
+            if self._try_session_auth():
                 self.log("session cookies valid")
-            else:
+                auth_worked = True
+            # If provided, set bearer token/API key as auth header for all requests
+            elif token:
+                self.log("using bearer token authentication")
+                self._set_bearer_token(token)
+                auth_worked = True
+            elif api_key:
+                self.log("using API key authentication")
+                self._set_bearer_token(api_key)
+                auth_worked = True
+            
+            # If no auto auth, try email/password login
+            if not auth_worked:
                 if not email or not password:
                     self.log(
                         "ERROR: set ZAI_API_KEY, ZAI_BEARER_TOKEN / ZAI_TOKEN, or "
@@ -106,6 +118,13 @@ class ZaiAddon(Addon):
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
+
+    def _set_bearer_token(self, token: str) -> None:
+        """Set bearer token as Authorization header for all browser requests."""
+        self.context.set_extra_http_headers({
+            "Authorization": f"Bearer {token}",
+            "X-API-Key": token,
+        })
 
     def _try_api_key(self, api_key: str) -> bool:
         if not api_key:
@@ -252,9 +271,20 @@ class ZaiAddon(Addon):
 
     def _download_invoices(self, result: RunResult) -> None:
         time.sleep(3)
+        
+        # Debug: log page info
+        url = self.page.url
+        title = self.page.title()
+        content_snippet = self.page.content()[:500]
+        self.log(f"page: {url} - title: {title}")
+        
         candidates = self._find_invoice_candidates()
         if not candidates:
-            self.log("no invoice download controls found")
+            # Debug: log page content for inspection
+            self.log(f"no invoice controls found; page content length: {len(self.page.content())}")
+            content = self.page.content().lower()
+            if "invoice" in content or "receipt" in content or "bill" in content:
+                self.log("DEBUG: page contains billing-related content but no clickable controls found")
             return
 
         self.log(f"found {len(candidates)} invoice candidate(s)")
