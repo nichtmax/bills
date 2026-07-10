@@ -307,7 +307,7 @@ DASHBOARD = LAYOUT_TOP + """
   <form method="post" action="{{ url_for('run', target='all') }}" style="display:inline">
     <button type="submit" title="Run all enabled addons"><span class="sym">⟳</span> Check all</button>
   </form>
-  {% for a in enabled %}
+  {% for a in known %}
   <form method="post" action="{{ url_for('run', target=a) }}" style="display:inline">
     <button class="secondary sm" type="submit" title="Check {{ a }} for new invoices"><span class="sym">▶</span> {{ a }}</button>
   </form>
@@ -479,7 +479,7 @@ CONFIG_PAGE = LAYOUT_TOP + """
 
 
 def _known_addons(cfg: Config) -> list[str]:
-    return sorted(set(cfg.enabled_addons()) | set(DEFAULT_CRON))
+    return sorted(set(cfg.enabled_addons()) | set(DEFAULT_CRON) | {"zai"})
 
 
 def _group_invoices(rows):

@@ -19,6 +19,7 @@ fi
 
 if [ -d "$APP_DIR/.git" ]; then
   echo "[entrypoint] git pull..."
+  git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
   git pull --ff-only || echo "[entrypoint] git pull failed (continuing with current code)"
 fi
 

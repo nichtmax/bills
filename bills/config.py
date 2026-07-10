@@ -237,7 +237,7 @@ class Config:
 
     # -- addon selection / scheduling ------------------------------------
     def enabled_addons(self) -> list[str]:
-        raw = self.get("BILLS_ADDONS", "vodafone,cursor")
+        raw = self.get("BILLS_ADDONS", "vodafone,cursor,zai")
         return [a.strip().lower() for a in raw.split(",") if a.strip()]
 
     def cron(self, addon: str) -> str:

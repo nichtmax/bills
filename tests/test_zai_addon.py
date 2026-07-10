@@ -2,7 +2,8 @@ import unittest
 
 from bills.addons import REGISTRY
 from bills.addons.zai import ZaiAddon
-from bills.config import DEFAULT_CRON
+from bills.config import Config, DEFAULT_CRON
+from bills.web import _known_addons
 
 
 class ZaiAddonTests(unittest.TestCase):
@@ -18,6 +19,12 @@ class ZaiAddonTests(unittest.TestCase):
         headers = addon._api_headers("test-key")
         self.assertEqual(headers["Authorization"], "Bearer test-key")
         self.assertEqual(headers["X-API-Key"], "test-key")
+
+    def test_zai_is_in_default_enabled_addons(self) -> None:
+        self.assertIn("zai", Config().enabled_addons())
+
+    def test_zai_is_in_known_addons_for_dashboard(self) -> None:
+        self.assertIn("zai", _known_addons(Config()))
 
 
 if __name__ == "__main__":
