@@ -5,6 +5,18 @@ set -e
 APP_DIR="${BILLS_APP_DIR:-/app}"
 cd "$APP_DIR"
 
+if ! command -v git >/dev/null 2>&1; then
+  echo "[entrypoint] git not found; installing..."
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update && apt-get install -y --no-install-recommends git
+  elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache git
+  else
+    echo "[entrypoint] no supported package manager found to install git"
+    exit 1
+  fi
+fi
+
 if [ -d "$APP_DIR/.git" ]; then
   echo "[entrypoint] git pull..."
   git pull --ff-only || echo "[entrypoint] git pull failed (continuing with current code)"
