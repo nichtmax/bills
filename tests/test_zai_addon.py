@@ -20,6 +20,12 @@ class ZaiAddonTests(unittest.TestCase):
         self.assertEqual(headers["Authorization"], "Bearer test-key")
         self.assertEqual(headers["X-API-Key"], "test-key")
 
+    def test_bearer_token_headers_are_built(self) -> None:
+        addon = ZaiAddon.__new__(ZaiAddon)
+        headers = addon._token_headers("token-123")
+        self.assertEqual(headers["Authorization"], "Bearer token-123")
+        self.assertEqual(headers["Accept"], "application/json")
+
     def test_zai_is_in_default_enabled_addons(self) -> None:
         self.assertIn("zai", Config().enabled_addons())
 

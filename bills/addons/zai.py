@@ -13,6 +13,7 @@ import re
 import time
 import urllib.request
 from pathlib import Path
+from urllib.error import HTTPError
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
@@ -30,6 +31,7 @@ class ZaiAddon(Addon):
     def run(self) -> RunResult:
         result = RunResult()
         api_key = self.config.get("ZAI_API_KEY")
+        token = self.config.get("ZAI_BEARER_TOKEN") or self.config.get("ZAI_TOKEN")
         email = self.config.get("ZAI_EMAIL") or self.config.get("ZAI_USERNAME")
         password = self.config.get("ZAI_PASSWORD")
 
@@ -39,13 +41,15 @@ class ZaiAddon(Addon):
         try:
             if api_key and self._try_api_key(api_key):
                 self.log("API key auth worked")
+            elif token and self._try_token_auth(token):
+                self.log("bearer token auth worked")
             elif self._try_session_auth():
                 self.log("session cookies valid")
             else:
                 if not email or not password:
                     self.log(
-                        "ERROR: set ZAI_API_KEY, or ZAI_EMAIL / ZAI_USERNAME and "
-                        "ZAI_PASSWORD, or export session cookies"
+                        "ERROR: set ZAI_API_KEY, ZAI_BEARER_TOKEN / ZAI_TOKEN, or "
+                        "ZAI_EMAIL / ZAI_USERNAME and ZAI_PASSWORD, or export session cookies"
                     )
                     result.failed = 1
                     return result
@@ -96,6 +100,13 @@ class ZaiAddon(Addon):
             "Accept": "application/json",
         }
 
+    def _token_headers(self, token: str) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+
     def _try_api_key(self, api_key: str) -> bool:
         if not api_key:
             return False
@@ -113,6 +124,27 @@ class ZaiAddon(Addon):
                     return True
         except Exception as exc:  # noqa: BLE001
             self.log(f"API key auth failed: {exc}")
+        return False
+
+    def _try_token_auth(self, token: str) -> bool:
+        if not token:
+            return False
+        self.log("trying Z.ai bearer token authentication")
+        try:
+            req = urllib.request.Request(
+                "https://chat.z.ai/api/v1/users/user/settings",
+                headers=self._token_headers(token),
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=20) as response:
+                payload = response.read().decode("utf-8")
+                if response.status == 200 and payload:
+                    self.log("bearer token authentication succeeded")
+                    return True
+        except HTTPError as exc:  # noqa: BLE001
+            self.log(f"bearer token auth failed: HTTP {exc.code}")
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"bearer token auth failed: {exc}")
         return False
 
     def _try_session_auth(self) -> bool:
@@ -135,7 +167,11 @@ class ZaiAddon(Addon):
     def _login(self, email: str, password: str) -> bool:
         self.log(f"opening Z.ai login for {email[:3]}***")
         self.page.goto(LOGIN_URL, wait_until="domcontentloaded")
-        time.sleep(2)
+        time.sleep(5)
+
+        if self._try_magic_link_login(email, password):
+            return True
+
         try:
             email_input = self.page.locator(
                 "input[type='email'], input[name='email'], input[name='username'], input[type='text']"
@@ -165,6 +201,29 @@ class ZaiAddon(Addon):
                 return True
             time.sleep(2)
         return False
+
+    def _try_magic_link_login(self, email: str, password: str) -> bool:
+        try:
+            for locator in self.page.locator("input").all():
+                if not locator.is_visible():
+                    continue
+                name = (locator.get_attribute("name") or "").lower()
+                kind = (locator.get_attribute("type") or "").lower()
+                if kind in {"email", "text"} and "email" in name or "user" in name or "account" in name:
+                    locator.fill(email)
+                    break
+            for locator in self.page.locator("input").all():
+                if not locator.is_visible():
+                    continue
+                kind = (locator.get_attribute("type") or "").lower()
+                if kind == "password":
+                    locator.fill(password)
+                    break
+            self._click_submit()
+            time.sleep(5)
+            return self._on_billing_page()
+        except Exception:  # noqa: BLE001
+            return False
 
     def _click_submit(self) -> None:
         for selector in ("button[type='submit']", "button", "input[type='submit']"):
