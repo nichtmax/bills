@@ -70,17 +70,27 @@ class ZaiAddon(Addon):
             if self._try_session_auth():
                 self.log("session cookies valid")
                 auth_worked = True
-            # If provided, set bearer token/API key as auth header for all requests
-            elif token:
-                self.log("using bearer token authentication")
+            # Bearer token / API key: validate against a protected endpoint before
+            # trusting it, since chat.z.ai rejects inference-only API keys.
+            elif token and self._try_token_auth(token):
+                self.log("bearer token valid")
                 self._auth_token = token
                 self._set_bearer_token(token)
                 auth_worked = True
-            elif api_key:
-                self.log("using API key authentication")
+            elif api_key and self._try_api_key(api_key):
+                self.log("API key valid")
                 self._auth_token = api_key
                 self._set_bearer_token(api_key)
                 auth_worked = True
+            elif token or api_key:
+                self.log(
+                    "ERROR: provided ZAI_BEARER_TOKEN / ZAI_TOKEN / ZAI_API_KEY is not "
+                    "a valid chat.z.ai web session token (rejected by /api/models). "
+                    "Use the JWT from localStorage.token after a browser login, export "
+                    "session cookies, or set ZAI_EMAIL/ZAI_PASSWORD."
+                )
+                result.failed = 1
+                return result
             
             # If no auto auth, try email/password login
             if not auth_worked:
