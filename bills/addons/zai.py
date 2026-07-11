@@ -529,6 +529,13 @@ class ZaiAddon(Addon):
             self.log(f"  {status} {ctype.split(';')[0]} {url[:160]}")
         # Dump interactive controls and keyword hits so we can locate the invoice UI.
         self._dump_dom_summary()
+        # Full HTML dump for this diagnostic iteration (page is tiny ~13KB).
+        try:
+            self.log("FULL HTML DUMP START")
+            self.log(self.page.content())
+            self.log("FULL HTML DUMP END")
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"could not dump HTML: {exc}")
         self._save_debug_artifacts("nodebug")
 
     def _dump_dom_summary(self) -> None:
