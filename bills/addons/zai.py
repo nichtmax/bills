@@ -25,7 +25,9 @@ LOGIN_URL = "https://chat.z.ai/login"
 
 # Words that mark a URL/response as billing-related for network capture.
 _BILLING_KEYWORDS = (
-    "invoice", "receipt", "billing", "payment", "order", "transaction", "history",
+    "invoice", "receipt", "billing", "payment", "order", "transaction",
+    "history", "credit", "wallet", "finance", "recharge", "subscription",
+    "purchase",
 )
 # Matches absolute PDF URLs embedded in JSON/text response bodies.
 _PDF_URL_RE = re.compile(r'https?://[^\s"\'<>`]+?\.pdf[^\s"\'<>`]*', re.IGNORECASE)
@@ -144,11 +146,24 @@ class ZaiAddon(Addon):
         }
 
     def _set_bearer_token(self, token: str) -> None:
-        """Set bearer token as Authorization header for all browser requests."""
+        """Authenticate the browser SPA with the bearer token.
+
+        OpenWebUI (which powers chat.z.ai) stores its session JWT in
+        ``localStorage.token`` and only renders authenticated views — and fires
+        the billing/invoice API calls — when that key is present and valid.
+        A raw ``Authorization`` header alone authenticates individual XHRs but
+        leaves the SPA in a logged-out shell, so no billing data is ever
+        fetched. Injecting the token into localStorage via add_init_script
+        (runs before page scripts on every navigation) lets the SPA authenticate
+        itself end-to-end.
+        """
         self.context.set_extra_http_headers({
             "Authorization": f"Bearer {token}",
             "X-API-Key": token,
         })
+        self.context.add_init_script(
+            "try { localStorage.setItem('token', " + json.dumps(token) + "); } catch (e) {}"
+        )
 
     def _try_api_key(self, api_key: str) -> bool:
         if not api_key:
