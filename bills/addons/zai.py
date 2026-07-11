@@ -320,9 +320,20 @@ class ZaiAddon(Addon):
         self.page.keyboard.press("Enter")
 
     def _open_billing(self) -> bool:
+        # Boot the SPA at root first. Cold-loading /billing directly throws
+        # ("200: An unexpected error has occurred") because the app's Svelte
+        # stores (user/config/models) are not initialized until the app boots.
+        self._init_app_root()
         self.page.goto(BILLING_URL, wait_until="domcontentloaded")
         self._wait_for_render()
         return self._on_billing_page()
+
+    def _init_app_root(self) -> None:
+        try:
+            self.page.goto(LOGIN_URL.rsplit("/", 1)[0] + "/", wait_until="domcontentloaded")
+            self._wait_for_render()
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"root init error: {exc}")
 
     def _wait_for_render(self) -> None:
         """Give the SPA time to mount its app into #app beyond first paint."""
@@ -539,6 +550,10 @@ class ZaiAddon(Addon):
             self.log(f"pageerror: {err}")
         for typ, msg in self._console_msgs:
             if typ in ("error", "warning"):
+                self.log(f"console.{typ}: {msg}")
+        # Last few console messages of any type (app debug logs).
+        for typ, msg in self._console_msgs[-12:]:
+            if typ not in ("error", "warning", "log"):
                 self.log(f"console.{typ}: {msg}")
         for url, fail in self._failed_requests[:15]:
             self.log(f"requestfailed: {url[:140]} | {fail}")
