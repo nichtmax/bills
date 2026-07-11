@@ -57,6 +57,7 @@ class ZaiAddon(Addon):
         self.page = self.browser.page
         self.context = self.browser.context
         self._captured_responses: list = []
+        self._all_api_calls: list[tuple[str, int, str]] = []
         self._auth_token: str | None = None
         self.page.on("response", self._on_response)
         try:
@@ -307,15 +308,16 @@ class ZaiAddon(Addon):
         """Capture billing-related JSON/PDF responses for offline URL harvest."""
         try:
             url = response.url or ""
+            status = response.status
+            ctype = (response.headers.get("content-type") or "").lower()
         except Exception:  # noqa: BLE001
             return
+        # Diagnostic record of every API/JSON call (reveals the real invoice API).
+        if "/api/" in url or "json" in ctype:
+            self._all_api_calls.append((url, status, ctype))
         low = url.lower()
         if not any(k in low for k in _BILLING_KEYWORDS) and not low.endswith(".pdf"):
             return
-        try:
-            ctype = (response.headers.get("content-type") or "").lower()
-        except Exception:  # noqa: BLE001
-            ctype = ""
         if "json" in ctype or "pdf" in ctype or low.split("?")[0].endswith(".pdf"):
             self._captured_responses.append(response)
 
@@ -474,9 +476,32 @@ class ZaiAddon(Addon):
                 return
 
         # Nothing worked: leave breadcrumbs for diagnosis.
-        self.log(
-            f"no invoices found; page content length: {len(self.page.content())}"
+        self._log_diagnostics()
+
+    def _log_diagnostics(self) -> None:
+        """Emit network/HTML signals into the run log (readable via /api/runs)."""
+        self.log(f"no invoices found; page content length: {len(self.page.content())}")
+        try:
+            final_url = self.page.url
+        except Exception:  # noqa: BLE001
+            final_url = "?"
+        self.log(f"final url: {final_url}")
+        try:
+            visible = self.page.inner_text("body")[:600].replace("\n", " ")
+        except Exception:  # noqa: BLE001
+            visible = ""
+        lowered = visible.lower()
+        wall = any(
+            w in lowered for w in ("sign in", "log in", "login", "sign-in", "please log")
         )
+        self.log(f"login wall detected: {wall}")
+        if visible:
+            self.log(f"visible text: {visible[:300]}")
+        # Show every API/JSON call the SPA made — reveals the real invoice endpoint.
+        calls = self._all_api_calls or []
+        self.log(f"api calls captured: {len(calls)}")
+        for url, status, ctype in calls:
+            self.log(f"  {status} {ctype.split(';')[0]} {url[:160]}")
         self._save_debug_artifacts("nodebug")
 
     def _finalize(self, local: Path, result: RunResult, text: str | None = None) -> bool:
