@@ -322,8 +322,13 @@ class ZaiAddon(Addon):
     def _open_billing(self) -> bool:
         # Boot the SPA at root first. Cold-loading /billing directly throws
         # ("200: An unexpected error has occurred") because the app's Svelte
-        # stores (user/config/models) are not initialized until the app boots.
+        # stores (user/config/models) are not initialized until the app boots,
+        # and the /billing route only works via in-app (client-side) navigation.
         self._init_app_root()
+        if self._navigate_to_billing_via_ui():
+            self._wait_for_render()
+            return self._on_billing_page()
+        # Fallback: direct navigation (often errors, but try).
         self.page.goto(BILLING_URL, wait_until="domcontentloaded")
         self._wait_for_render()
         return self._on_billing_page()
@@ -334,6 +339,63 @@ class ZaiAddon(Addon):
             self._wait_for_render()
         except Exception as exc:  # noqa: BLE001
             self.log(f"root init error: {exc}")
+
+    def _navigate_to_billing_via_ui(self) -> bool:
+        """Reach /billing by clicking the in-app nav entry (client-side route).
+
+        Cold-loading the /billing URL throws a render error; reaching it the way
+        a user does (clicking the nav entry after the app boots) works.
+        """
+        self.log("dumping root nav controls to locate billing entry:")
+        try:
+            for el in self.page.locator(
+                "a, button, [role='button'], [role='link'], [role='menuitem']"
+            ).all():
+                try:
+                    if not el.is_visible():
+                        continue
+                    label = (
+                        (el.text_content() or "").strip()
+                        or (el.get_attribute("aria-label") or "").strip()
+                    )
+                    href = el.get_attribute("href") or ""
+                    if label or href:
+                        self.log(f"  nav: {label[:60]!r} href={href[:80]!r}")
+                except Exception:  # noqa: BLE001
+                    continue
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"nav dump error: {exc}")
+
+        lower = (
+            "translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
+            "'abcdefghijklmnopqrstuvwxyz')"
+        )
+        for needle in (
+            "billing", "invoice", "payment", "upgrade", "subscription",
+            "recharge", "account", "充值", "账单", "发票", "升级", "订阅", "套餐",
+        ):
+            xpath = (
+                f"xpath=//*[self::a or self::button or @role='button' or "
+                f"@role='link' or @role='menuitem'][contains({lower}, '{needle}')]"
+            )
+            try:
+                loc = self.page.locator(xpath)
+                if loc.count() == 0:
+                    continue
+            except Exception:  # noqa: BLE001
+                continue
+            for el in loc.all():
+                try:
+                    if not el.is_visible():
+                        continue
+                    el.scroll_into_view_if_needed()
+                    el.click(timeout=5000)
+                    time.sleep(4)
+                    self.log(f"clicked billing nav matching '{needle}'")
+                    return True
+                except Exception:  # noqa: BLE001
+                    continue
+        return False
 
     def _wait_for_render(self) -> None:
         """Give the SPA time to mount its app into #app beyond first paint."""
