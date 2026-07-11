@@ -346,22 +346,82 @@ class ZaiAddon(Addon):
         Cold-loading the /billing URL throws a render error; reaching it the way
         a user does (clicking the nav entry after the app boots) works.
         """
-        # Open the user menu so dropdown entries (where billing usually lives)
-        # become visible/clickable.
-        self._open_user_menu()
-        self._dump_all_hrefs()
+        # Open candidate menus/dialogs, then look for a billing entry inside.
+        for opener in ("Open Settings", self._user_name_hint(), "More", "API"):
+            if self._click_text(opener):
+                time.sleep(3)
+                if self._dump_and_click_billing():
+                    return True
+        return False
 
+    def _user_name_hint(self) -> str:
+        try:
+            email = self.config.get("ZAI_EMAIL") or self.config.get("ZAI_USERNAME") or ""
+        except Exception:  # noqa: BLE001
+            email = ""
+        return (email.split("@")[0])[:24] if email else ""
+
+    def _click_text(self, needle: str) -> bool:
+        """Click the first visible element whose text contains needle."""
+        if not needle:
+            return False
         lower = (
             "translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
             "'abcdefghijklmnopqrstuvwxyz')"
         )
-        for needle in (
+        xpath = (
+            f"xpath=//*[contains({lower}, '{needle.lower()}')]"
+            f"[not(self::script)][not(self::style)]"
+        )
+        try:
+            for el in self.page.locator(xpath).all():
+                try:
+                    if el.is_visible() and el.is_enabled():
+                        el.scroll_into_view_if_needed()
+                        el.click(timeout=4000)
+                        self.log(f"clicked '{needle}'")
+                        return True
+                except Exception:  # noqa: BLE001
+                    continue
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+
+    def _dump_and_click_billing(self) -> bool:
+        """Log visible controls and click one matching a billing label."""
+        needles = (
             "billing", "invoice", "payment", "upgrade", "subscription",
             "recharge", "account", "充值", "账单", "发票", "升级", "订阅", "套餐",
-        ):
+            "plan", "pricing",
+        )
+        lower = (
+            "translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
+            "'abcdefghijklmnopqrstuvwxyz')"
+        )
+        try:
+            controls = self.page.locator(
+                "a, button, [role='button'], [role='link'], "
+                "[role='menuitem'], [role='tab'], li, div"
+            ).all()
+        except Exception:  # noqa: BLE001
+            controls = []
+        self.log(f"visible controls ({len(controls)}):")
+        for el in controls[:120]:
+            try:
+                if not el.is_visible():
+                    continue
+                text = (el.text_content() or "").strip()
+                href = el.get_attribute("href") or ""
+                if text and len(text) < 60:
+                    self.log(f"  ctrl[{text[:50]!r}] href={href[:60]!r}")
+            except Exception:  # noqa: BLE001
+                continue
+        # Click the first billing-matching control.
+        for needle in needles:
             xpath = (
                 f"xpath=//*[self::a or self::button or @role='button' or "
-                f"@role='link' or @role='menuitem'][contains({lower}, '{needle}')]"
+                f"@role='link' or @role='menuitem' or @role='tab']"
+                f"[contains({lower}, '{needle}')]"
             )
             try:
                 loc = self.page.locator(xpath)
@@ -376,64 +436,11 @@ class ZaiAddon(Addon):
                     el.scroll_into_view_if_needed()
                     el.click(timeout=5000)
                     time.sleep(4)
-                    self.log(f"clicked billing nav matching '{needle}'")
+                    self.log(f"clicked billing control matching '{needle}'")
                     return True
                 except Exception:  # noqa: BLE001
                     continue
         return False
-
-    def _open_user_menu(self) -> None:
-        """Click the user/settings menu to reveal dropdown entries."""
-        lower = (
-            "translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
-            "'abcdefghijklmnopqrstuvwxyz')"
-        )
-        for needle in (self._user_name_hint(), "open settings", "settings", "account"):
-            if not needle:
-                continue
-            xpath = (
-                f"xpath=//*[self::button or @role='button' or @role='menuitem']"
-                f"[contains({lower}, '{needle}')]"
-            )
-            try:
-                loc = self.page.locator(xpath).first
-                if loc.count() and loc.is_visible():
-                    loc.scroll_into_view_if_needed()
-                    loc.click(timeout=4000)
-                    time.sleep(2)
-                    self.log(f"opened menu matching '{needle}'")
-                    return
-            except Exception:  # noqa: BLE001
-                continue
-
-    def _user_name_hint(self) -> str:
-        try:
-            email = self.config.get("ZAI_EMAIL") or self.config.get("ZAI_USERNAME") or ""
-        except Exception:  # noqa: BLE001
-            email = ""
-        return (email.split("@")[0])[:24] if email else ""
-
-    def _dump_all_hrefs(self) -> None:
-        """Log every anchor href/text in the DOM (incl. hidden dropdown items)."""
-        try:
-            items = self.page.eval_on_selector_all(
-                "a",
-                "els => els.map(e => ({h: e.getAttribute('href')||'', "
-                "t: (e.textContent||'').trim().slice(0,40)}))",
-            )
-        except Exception as exc:  # noqa: BLE001
-            self.log(f"href dump error: {exc}")
-            return
-        self.log(f"all anchors ({len(items)}):")
-        seen = set()
-        for it in items:
-            href = (it.get("h") or "").strip()
-            text = (it.get("t") or "").strip()
-            key = (href, text)
-            if key in seen or not (href or text):
-                continue
-            seen.add(key)
-            self.log(f"  a[{text[:40]!r}] -> {href[:100]!r}")
 
     def _wait_for_render(self) -> None:
         """Give the SPA time to mount its app into #app beyond first paint."""
