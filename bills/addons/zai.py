@@ -60,8 +60,19 @@ class ZaiAddon(Addon):
         self.context = self.browser.context
         self._captured_responses: list = []
         self._all_api_calls: list[tuple[str, int, str]] = []
+        self._console_msgs: list[tuple[str, str]] = []
+        self._page_errors: list[str] = []
+        self._failed_requests: list[tuple[str, str]] = []
         self._auth_token: str | None = None
         self.page.on("response", self._on_response)
+        self.page.on("console", lambda m: self._console_msgs.append((m.type, m.text[:300])))
+        self.page.on("pageerror", lambda e: self._page_errors.append(str(e)[:500]))
+        self.page.on(
+            "requestfailed",
+            lambda r: self._failed_requests.append(
+                (r.url, str(r.failure)[:200] if r.failure else "")
+            ),
+        )
         try:
             # Try various auth methods (prefer session/token over password login)
             auth_worked = False
@@ -314,9 +325,14 @@ class ZaiAddon(Addon):
         return self._on_billing_page()
 
     def _wait_for_render(self) -> None:
-        """Give the SPA time to render content beyond first paint."""
+        """Give the SPA time to mount its app into #app beyond first paint."""
         try:
             self.page.wait_for_load_state("networkidle", timeout=15000)
+        except PlaywrightTimeout:
+            pass
+        # Wait for the SPA to actually mount content into #app.
+        try:
+            self.page.wait_for_selector("#app :scope > *", timeout=25000)
         except PlaywrightTimeout:
             pass
         time.sleep(3)
@@ -511,6 +527,21 @@ class ZaiAddon(Addon):
         except Exception:  # noqa: BLE001
             final_url = "?"
         self.log(f"final url: {final_url}")
+        # SPA mount status: is #app populated?
+        try:
+            app_html = self.page.eval_on_selector(
+                "#app", "el => (el && el.children.length) || 0"
+            )
+        except Exception:  # noqa: BLE001
+            app_html = -1
+        self.log(f"#app children mounted: {app_html}")
+        for err in self._page_errors[:10]:
+            self.log(f"pageerror: {err}")
+        for typ, msg in self._console_msgs:
+            if typ in ("error", "warning"):
+                self.log(f"console.{typ}: {msg}")
+        for url, fail in self._failed_requests[:15]:
+            self.log(f"requestfailed: {url[:140]} | {fail}")
         try:
             visible = self.page.inner_text("body")[:600].replace("\n", " ")
         except Exception:  # noqa: BLE001
@@ -529,13 +560,6 @@ class ZaiAddon(Addon):
             self.log(f"  {status} {ctype.split(';')[0]} {url[:160]}")
         # Dump interactive controls and keyword hits so we can locate the invoice UI.
         self._dump_dom_summary()
-        # Full HTML dump for this diagnostic iteration (page is tiny ~13KB).
-        try:
-            self.log("FULL HTML DUMP START")
-            self.log(self.page.content())
-            self.log("FULL HTML DUMP END")
-        except Exception as exc:  # noqa: BLE001
-            self.log(f"could not dump HTML: {exc}")
         self._save_debug_artifacts("nodebug")
 
     def _dump_dom_summary(self) -> None:
