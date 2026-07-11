@@ -172,16 +172,16 @@ class ZaiAddon(Addon):
         OpenWebUI (which powers chat.z.ai) stores its session JWT in
         ``localStorage.token`` and only renders authenticated views — and fires
         the billing/invoice API calls — when that key is present and valid.
-        A raw ``Authorization`` header alone authenticates individual XHRs but
-        leaves the SPA in a logged-out shell, so no billing data is ever
-        fetched. Injecting the token into localStorage via add_init_script
-        (runs before page scripts on every navigation) lets the SPA authenticate
-        itself end-to-end.
+        Injecting the token into localStorage via add_init_script (runs before
+        page scripts on every navigation) lets the SPA read it and attach
+        ``Authorization: Bearer`` to its own ``/api/*`` requests.
+
+        NOTE: do NOT use ``context.set_extra_http_headers`` for the auth token.
+        Applying ``Authorization``/``X-API-Key`` globally forces a CORS preflight
+        on every cross-origin asset (e.g. the app bundle on z-cdn.chatglm.cn),
+        which the CDN rejects (net::ERR_FAILED) — the SPA never mounts and the
+        page stays an empty shell.
         """
-        self.context.set_extra_http_headers({
-            "Authorization": f"Bearer {token}",
-            "X-API-Key": token,
-        })
         self.context.add_init_script(
             "try { localStorage.setItem('token', " + json.dumps(token) + "); } catch (e) {}"
         )
