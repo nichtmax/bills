@@ -521,13 +521,58 @@ class ZaiAddon(Addon):
         )
         self.log(f"login wall detected: {wall}")
         if visible:
-            self.log(f"visible text: {visible[:300]}")
+            self.log(f"visible text: {visible[:400]}")
         # Show every API/JSON call the SPA made — reveals the real invoice endpoint.
         calls = self._all_api_calls or []
         self.log(f"api calls captured: {len(calls)}")
         for url, status, ctype in calls:
             self.log(f"  {status} {ctype.split(';')[0]} {url[:160]}")
+        # Dump interactive controls and keyword hits so we can locate the invoice UI.
+        self._dump_dom_summary()
         self._save_debug_artifacts("nodebug")
+
+    def _dump_dom_summary(self) -> None:
+        """Log links, buttons, and billing-keyword hits from the rendered DOM."""
+        try:
+            html_src = self.page.content()
+        except Exception:  # noqa: BLE001
+            return
+        low = html_src.lower()
+        # English + Chinese (Zhipu AI) billing terms.
+        keywords = (
+            "invoice", "receipt", "billing", "payment", "recharge", "wallet",
+            "credit", "transaction", "订单", "账单", "发票", "充值", "交易",
+        )
+        hits = sorted({kw for kw in keywords if kw.lower() in low})
+        self.log(f"keyword hits in DOM: {hits}")
+        try:
+            hrefs = sorted(
+                {
+                    a.get_attribute("href")
+                    for a in self.page.locator("a").all()
+                    if a.get_attribute("href")
+                }
+            )
+        except Exception:  # noqa: BLE001
+            hrefs = []
+        self.log(f"distinct links ({len(hrefs)}):")
+        for href in hrefs[:60]:
+            self.log(f"  a -> {href[:140]}")
+        try:
+            controls = self.page.locator("button, [role='button'], [role='tab']").all()
+        except Exception:  # noqa: BLE001
+            controls = []
+        self.log(f"buttons/tabs ({len(controls)}):")
+        for el in controls[:60]:
+            try:
+                if not el.is_visible():
+                    continue
+                label = ((el.text_content() or "").strip()
+                         or (el.get_attribute("aria-label") or "").strip())[:80]
+                if label:
+                    self.log(f"  btn: {label}")
+            except Exception:  # noqa: BLE001
+                continue
 
     def _finalize(self, local: Path, result: RunResult, text: str | None = None) -> bool:
         """Move a downloaded file to its target, record it, and email it.
