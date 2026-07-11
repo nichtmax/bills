@@ -23,6 +23,24 @@ from ..core.browser import inject_cookies
 BILLING_URL = "https://chat.z.ai/billing"
 LOGIN_URL = "https://chat.z.ai/login"
 
+# Words that mark a URL/response as billing-related for network capture.
+_BILLING_KEYWORDS = (
+    "invoice", "receipt", "billing", "payment", "order", "transaction", "history",
+)
+# Matches absolute PDF URLs embedded in JSON/text response bodies.
+_PDF_URL_RE = re.compile(r'https?://[^\s"\'<>`]+?\.pdf[^\s"\'<>`]*', re.IGNORECASE)
+# Matches JSON fields likely to hold a downloadable document URL.
+_URL_FIELD_RE = re.compile(
+    r'"(?:download|invoice|receipt|file|pdf|document|url)_?(?:url|link|href)"'
+    r'\s*:\s*"(https?://[^"]+)"',
+    re.IGNORECASE,
+)
+# Section/tab labels that reveal the invoice list on a SPA billing page.
+_SECTION_LABELS = (
+    "invoices", "invoice history", "billing history", "payment history",
+    "receipts", "transactions", "payments", "bills", "orders",
+)
+
 
 class ZaiAddon(Addon):
     name = "zai"
@@ -38,6 +56,9 @@ class ZaiAddon(Addon):
         self.browser = self.make_browser()
         self.page = self.browser.page
         self.context = self.browser.context
+        self._captured_responses: list = []
+        self._auth_token: str | None = None
+        self.page.on("response", self._on_response)
         try:
             # Try various auth methods (prefer session/token over password login)
             auth_worked = False
@@ -49,10 +70,12 @@ class ZaiAddon(Addon):
             # If provided, set bearer token/API key as auth header for all requests
             elif token:
                 self.log("using bearer token authentication")
+                self._auth_token = token
                 self._set_bearer_token(token)
                 auth_worked = True
             elif api_key:
                 self.log("using API key authentication")
+                self._auth_token = api_key
                 self._set_bearer_token(api_key)
                 auth_worked = True
             
@@ -261,71 +284,246 @@ class ZaiAddon(Addon):
 
     def _open_billing(self) -> bool:
         self.page.goto(BILLING_URL, wait_until="domcontentloaded")
-        time.sleep(3)
+        self._wait_for_render()
         return self._on_billing_page()
+
+    def _wait_for_render(self) -> None:
+        """Give the SPA time to render content beyond first paint."""
+        try:
+            self.page.wait_for_load_state("networkidle", timeout=15000)
+        except PlaywrightTimeout:
+            pass
+        time.sleep(3)
 
     def _on_billing_page(self) -> bool:
         url = self.page.url.lower()
         src = self.page.content().lower()
+        # Not logged in if bounced to the login page.
+        if "login" in url and "billing" not in url:
+            return False
         return "billing" in url or "invoice" in src or "receipt" in src or "payment" in src
 
+    def _on_response(self, response) -> None:
+        """Capture billing-related JSON/PDF responses for offline URL harvest."""
+        try:
+            url = response.url or ""
+        except Exception:  # noqa: BLE001
+            return
+        low = url.lower()
+        if not any(k in low for k in _BILLING_KEYWORDS) and not low.endswith(".pdf"):
+            return
+        try:
+            ctype = (response.headers.get("content-type") or "").lower()
+        except Exception:  # noqa: BLE001
+            ctype = ""
+        if "json" in ctype or "pdf" in ctype or low.split("?")[0].endswith(".pdf"):
+            self._captured_responses.append(response)
+
+    def _harvest_pdf_urls(self) -> list[str]:
+        """Extract downloadable PDF/document URLs from captured API responses."""
+        urls: list[str] = []
+        for resp in self._captured_responses:
+            try:
+                url = resp.url
+                ctype = (resp.headers.get("content-type") or "").lower()
+            except Exception:  # noqa: BLE001
+                continue
+            if "pdf" in ctype or url.lower().split("?")[0].endswith(".pdf"):
+                urls.append(url)
+                continue
+            if "json" not in ctype:
+                continue
+            try:
+                body = resp.text()
+            except Exception:  # noqa: BLE001
+                continue
+            urls.extend(m.group(0) for m in _PDF_URL_RE.finditer(body))
+            urls.extend(m.group(1) for m in _URL_FIELD_RE.finditer(body))
+        # Deduplicate, preserve order.
+        return list(dict.fromkeys(urls))
+
+    def _download_via_url(self, url: str) -> Path | None:
+        """Download a document URL using the authenticated browser context."""
+        headers = {}
+        if self._auth_token:
+            headers["Authorization"] = f"Bearer {self._auth_token}"
+            headers["X-API-Key"] = self._auth_token
+        try:
+            api_resp = self.context.request.get(url, timeout=60000, headers=headers)
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"fetch {url[:80]}: {exc}")
+            return None
+        if not api_resp.ok:
+            self.log(f"fetch {url[:80]}: HTTP {api_resp.status}")
+            return None
+        body = api_resp.body()
+        if not body or body[:4] != b"%PDF":
+            self.log(f"fetch {url[:80]}: response is not a PDF")
+            return None
+        name = url.rsplit("/", 1)[-1].split("?")[0] or "invoice"
+        if not name.lower().endswith(".pdf"):
+            name += ".pdf"
+        local = self.download_dir / name
+        local.write_bytes(body)
+        return local if local.exists() and local.stat().st_size > 0 else None
+
+    def _scroll_to_load(self, rounds: int = 6) -> None:
+        """Scroll the page and inner scroll containers to trigger lazy rows."""
+        for _ in range(rounds):
+            try:
+                self.page.mouse.wheel(0, 4000)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                self.page.evaluate(
+                    "() => {"
+                    " window.scrollTo(0, document.body.scrollHeight);"
+                    " for (const el of document.querySelectorAll('main, [class*=scroll], [class*=list], [role=table], .ant-table-body')) {"
+                    "  if (el.scrollHeight > el.clientHeight) el.scrollTop = el.scrollHeight;"
+                    " }"
+                    "}"
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            time.sleep(1)
+
+    def _open_invoices_section(self) -> None:
+        """Click an invoices/billing-history tab if present (reveals the list)."""
+        lower = (
+            "translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
+            "'abcdefghijklmnopqrstuvwxyz')"
+        )
+        for needle in _SECTION_LABELS:
+            xpath = (
+                f"xpath=//*[self::a or self::button or @role='tab' or @role='button']"
+                f"[contains({lower}, '{needle}')]"
+            )
+            try:
+                loc = self.page.locator(xpath)
+                if loc.count() == 0:
+                    continue
+            except Exception:  # noqa: BLE001
+                continue
+            try:
+                el = loc.first
+                if not el.is_visible():
+                    continue
+                el.scroll_into_view_if_needed()
+                el.click()
+                time.sleep(3)
+                self.log(f"opened section matching '{needle}'")
+                return
+            except Exception:  # noqa: BLE001
+                continue
+
+    def _save_debug_artifacts(self, tag: str) -> None:
+        """Persist a screenshot + HTML dump for offline inspection."""
+        try:
+            shot = Path(self.config.config_dir) / f"zai-billing-{tag}.png"
+            self.page.screenshot(path=str(shot), full_page=True)
+            self.log(f"saved debug screenshot: {shot}")
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"could not save screenshot: {exc}")
+        try:
+            html = Path(self.config.config_dir) / f"zai-billing-{tag}.html"
+            html.write_text(self.page.content(), encoding="utf-8")
+            self.log(f"saved debug HTML: {html}")
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"could not save HTML: {exc}")
+
     def _download_invoices(self, result: RunResult) -> None:
-        time.sleep(3)
-        
-        # Debug: log page info
+        self._wait_for_render()
+        self._open_invoices_section()
+        self._scroll_to_load()
+
         url = self.page.url
         title = self.page.title()
-        content_snippet = self.page.content()[:500]
         self.log(f"page: {url} - title: {title}")
-        
-        candidates = self._find_invoice_candidates()
-        if not candidates:
-            # Debug: log page content for inspection
-            self.log(f"no invoice controls found; page content length: {len(self.page.content())}")
-            content = self.page.content().lower()
-            if "invoice" in content or "receipt" in content or "bill" in content:
-                self.log("DEBUG: page contains billing-related content but no clickable controls found")
-            return
 
-        self.log(f"found {len(candidates)} invoice candidate(s)")
-        for index, candidate in enumerate(candidates, start=1):
-            try:
+        downloaded_any = False
+
+        # Strategy 1: harvest invoice PDF URLs straight from the billing API.
+        pdf_urls = self._harvest_pdf_urls()
+        if pdf_urls:
+            self.log(f"captured {len(pdf_urls)} invoice URL(s) from network")
+            for index, pdf_url in enumerate(pdf_urls, start=1):
+                local = self._download_via_url(pdf_url)
+                if not local:
+                    result.failed += 1
+                    continue
+                if not self._finalize(local, result):
+                    continue
+                downloaded_any = True
+            if downloaded_any:
+                return
+
+        # Strategy 2: click visible download controls.
+        candidates = self._find_invoice_candidates()
+        if candidates:
+            self.log(f"found {len(candidates)} invoice candidate(s)")
+            for index, candidate in enumerate(candidates, start=1):
                 local = self._download_candidate(candidate)
                 if not local:
                     self.log(f"invoice {index}: download failed or unsupported")
                     result.failed += 1
                     continue
-
-                text = candidate.get("text") or local.name
-                date, number = self._extract_invoice_data(text)
-                target = self.target_path(date, number)
-                if target.exists():
-                    target.unlink(missing_ok=True)
-                local.replace(target)
-
-                if self.already_known(number or local.stem, target):
-                    self.log(f"skip {target.name} (already known)")
-                    result.skipped += 1
+                if not self._finalize(local, result, candidate.get("text")):
                     continue
+                downloaded_any = True
+            if downloaded_any:
+                return
 
-                key = number or local.stem
-                self.record(key, target, {"date": date, "number": number})
-                self.email(target)
-                result.downloaded += 1
-                result.new_files.append(target)
-                self.log(f"new invoice: {target.name}")
-            except Exception as exc:  # noqa: BLE001
-                self.log(f"invoice {index} error: {exc}")
-                result.failed += 1
+        # Nothing worked: leave breadcrumbs for diagnosis.
+        self.log(
+            f"no invoices found; page content length: {len(self.page.content())}"
+        )
+        self._save_debug_artifacts("nodebug")
+
+    def _finalize(self, local: Path, result: RunResult, text: str | None = None) -> bool:
+        """Move a downloaded file to its target, record it, and email it.
+
+        Returns True when the file was handled (recorded or skipped).
+        """
+        text = text or local.name
+        date, number = self._extract_invoice_data(text)
+        target = self.target_path(date, number)
+        if target.exists():
+            target.unlink(missing_ok=True)
+        local.replace(target)
+
+        key = number or local.stem
+        if self.already_known(key, target):
+            self.log(f"skip {target.name} (already known)")
+            result.skipped += 1
+            return True
+
+        self.record(key, target, {"date": date, "number": number})
+        self.email(target)
+        result.downloaded += 1
+        result.new_files.append(target)
+        self.log(f"new invoice: {target.name}")
+        return True
 
     def _find_invoice_candidates(self) -> list[dict]:
         selectors = [
             "a[href*='.pdf']",
+            "a[download]",
             "a[href*='invoice']",
             "a[href*='receipt']",
-            "button[aria-label*='invoice']",
-            "button[aria-label*='receipt']",
-            "button[aria-label*='download']",
+            "a[href*='download']",
+            "button[aria-label*='invoice' i]",
+            "button[aria-label*='receipt' i]",
+            "button[aria-label*='download' i]",
+            "[role='button'][aria-label*='download' i]",
+            "[role='link'][aria-label*='download' i]",
+            # Icon-only download buttons rendered as clickable SVG glyphs.
+            "button:has(svg)",
+            "a:has(svg)",
+            "[role='button']:has(svg)",
+            "[role='link']:has(svg)",
+            "td button",
+            "td a",
+            "tr button",
             "a",
             "button",
         ]
@@ -334,19 +532,23 @@ class ZaiAddon(Addon):
         for selector in selectors:
             try:
                 elements = self.page.locator(selector).all()
-            except Exception:
+            except Exception:  # noqa: BLE001
                 continue
             for element in elements:
-                if not element.is_visible():
+                try:
+                    if not element.is_visible():
+                        continue
+                    text = (element.text_content() or "").strip()
+                    href = (element.get_attribute("href") or "").strip()
+                    aria = (element.get_attribute("aria-label") or "").strip()
+                    cls = (element.get_attribute("class") or "").lower()
+                except Exception:  # noqa: BLE001
                     continue
-                text = (element.text_content() or "").strip()
-                href = (element.get_attribute("href") or "").strip()
-                aria = (element.get_attribute("aria-label") or "").strip()
-                if not text and not href and not aria:
+                if not self._looks_like_download(text, href, aria, cls):
                     continue
-                lowered = f"{text} {href} {aria}".lower()
-                if any(token in lowered for token in ("invoice", "receipt", "download", "bill", ".pdf")):
-                    candidates.append({"element": element, "text": text, "href": href, "aria": aria})
+                candidates.append(
+                    {"element": element, "text": text, "href": href, "aria": aria}
+                )
         seen: set[tuple[str, str]] = set()
         deduped: list[dict] = []
         for item in candidates:
@@ -357,20 +559,27 @@ class ZaiAddon(Addon):
             deduped.append(item)
         return deduped
 
+    @staticmethod
+    def _looks_like_download(text: str, href: str, aria: str, cls: str) -> bool:
+        lowered = f"{text} {href} {aria}".lower()
+        if any(token in lowered for token in ("invoice", "receipt", "download", ".pdf")):
+            return True
+        if any(token in cls for token in ("download", "invoice", "receipt")):
+            return True
+        return False
+
     def _download_candidate(self, candidate: dict) -> Path | None:
         element = candidate.get("element")
         href = candidate.get("href") or ""
         if not element:
             return None
-        try:
-            if href.endswith(".pdf"):
-                with self.page.expect_download(timeout=60000) as download_info:
-                    element.click()
-                download = download_info.value
-                local = self.download_dir / download.suggested_filename
-                download.save_as(local)
-                return local if local.exists() and local.stat().st_size > 0 else None
+        # Direct href to a PDF: fetch via the authenticated context.
+        if href and href.lower().split("?")[0].endswith(".pdf"):
+            local = self._download_via_url(href)
+            if local:
+                return local
 
+        try:
             with self.page.expect_download(timeout=60000) as download_info:
                 element.click()
             download = download_info.value
@@ -378,10 +587,18 @@ class ZaiAddon(Addon):
             download.save_as(local)
             return local if local.exists() and local.stat().st_size > 0 else None
         except PlaywrightTimeout:
-            return None
+            pass
         except Exception as exc:  # noqa: BLE001
             self.log(f"download candidate error: {exc}")
-            return None
+
+        # Click may have triggered an XHR returning a PDF instead of a download;
+        # re-harvest captured URLs after the click.
+        time.sleep(2)
+        for pdf_url in self._harvest_pdf_urls():
+            local = self._download_via_url(pdf_url)
+            if local:
+                return local
+        return None
 
     def _extract_invoice_data(self, text: str) -> tuple[str | None, str | None]:
         text = text.strip()
