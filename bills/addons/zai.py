@@ -346,25 +346,10 @@ class ZaiAddon(Addon):
         Cold-loading the /billing URL throws a render error; reaching it the way
         a user does (clicking the nav entry after the app boots) works.
         """
-        self.log("dumping root nav controls to locate billing entry:")
-        try:
-            for el in self.page.locator(
-                "a, button, [role='button'], [role='link'], [role='menuitem']"
-            ).all():
-                try:
-                    if not el.is_visible():
-                        continue
-                    label = (
-                        (el.text_content() or "").strip()
-                        or (el.get_attribute("aria-label") or "").strip()
-                    )
-                    href = el.get_attribute("href") or ""
-                    if label or href:
-                        self.log(f"  nav: {label[:60]!r} href={href[:80]!r}")
-                except Exception:  # noqa: BLE001
-                    continue
-        except Exception as exc:  # noqa: BLE001
-            self.log(f"nav dump error: {exc}")
+        # Open the user menu so dropdown entries (where billing usually lives)
+        # become visible/clickable.
+        self._open_user_menu()
+        self._dump_all_hrefs()
 
         lower = (
             "translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
@@ -396,6 +381,59 @@ class ZaiAddon(Addon):
                 except Exception:  # noqa: BLE001
                     continue
         return False
+
+    def _open_user_menu(self) -> None:
+        """Click the user/settings menu to reveal dropdown entries."""
+        lower = (
+            "translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
+            "'abcdefghijklmnopqrstuvwxyz')"
+        )
+        for needle in (self._user_name_hint(), "open settings", "settings", "account"):
+            if not needle:
+                continue
+            xpath = (
+                f"xpath=//*[self::button or @role='button' or @role='menuitem']"
+                f"[contains({lower}, '{needle}')]"
+            )
+            try:
+                loc = self.page.locator(xpath).first
+                if loc.count() and loc.is_visible():
+                    loc.scroll_into_view_if_needed()
+                    loc.click(timeout=4000)
+                    time.sleep(2)
+                    self.log(f"opened menu matching '{needle}'")
+                    return
+            except Exception:  # noqa: BLE001
+                continue
+
+    def _user_name_hint(self) -> str:
+        try:
+            email = self.config.get("ZAI_EMAIL") or self.config.get("ZAI_USERNAME") or ""
+        except Exception:  # noqa: BLE001
+            email = ""
+        return (email.split("@")[0])[:24] if email else ""
+
+    def _dump_all_hrefs(self) -> None:
+        """Log every anchor href/text in the DOM (incl. hidden dropdown items)."""
+        try:
+            items = self.page.eval_on_selector_all(
+                "a",
+                "els => els.map(e => ({h: e.getAttribute('href')||'', "
+                "t: (e.textContent||'').trim().slice(0,40)}))",
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"href dump error: {exc}")
+            return
+        self.log(f"all anchors ({len(items)}):")
+        seen = set()
+        for it in items:
+            href = (it.get("h") or "").strip()
+            text = (it.get("t") or "").strip()
+            key = (href, text)
+            if key in seen or not (href or text):
+                continue
+            seen.add(key)
+            self.log(f"  a[{text[:40]!r}] -> {href[:100]!r}")
 
     def _wait_for_render(self) -> None:
         """Give the SPA time to mount its app into #app beyond first paint."""
